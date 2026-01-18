@@ -1,0 +1,39 @@
+const express = require("express");
+const cors = require("cors");
+const dotenv = require("dotenv");
+
+dotenv.config(); // MUST be first
+
+const pool = require("./config/database");
+const userRoutes = require("./routes/user.routes");
+const workRoutes = require("./routes/work.routes");
+const shopRoutes = require("./routes/shop.routes");
+const spareRoutes = require("./routes/spare.routes");
+const customerRoutes = require("./routes/customer.routes");
+
+const app = express();
+
+// CORS middleware
+app.use(cors());
+
+app.use(express.json());
+
+// Routes
+app.use("/", userRoutes);
+app.use("/", workRoutes);
+app.use("/", shopRoutes);
+app.use("/", spareRoutes);
+app.use("/", customerRoutes);
+
+app.get("/", async (req, res) => {
+  const result = await pool.query("SELECT current_database()");
+  res.json({
+    message: "Metro Backend Running 🚀",
+    database: result.rows[0].current_database,
+  });
+});
+
+const PORT = process.env.PORT || 5000;
+app.listen(PORT, () => {
+  console.log(`✅ Server running on port ${PORT}`);
+});
