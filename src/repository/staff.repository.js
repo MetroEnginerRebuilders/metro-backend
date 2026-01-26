@@ -52,8 +52,8 @@ class StaffRepository {
   async findActive(searchTerm = "", page = 1, limit = 10) {
     const offset = (page - 1) * limit;
     
-    let query = "SELECT * FROM staff WHERE active_date <= CURRENT_DATE AND (inactive_date IS NULL OR inactive_date > CURRENT_DATE)";
-    let countQuery = "SELECT COUNT(*) FROM staff WHERE active_date <= CURRENT_DATE AND (inactive_date IS NULL OR inactive_date > CURRENT_DATE)";
+    let query = "SELECT * FROM staff WHERE inactive_date IS NULL";
+    let countQuery = "SELECT COUNT(*) FROM staff WHERE inactive_date IS NULL";
     let params = [];
     let countParams = [];
     
