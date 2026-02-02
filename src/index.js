@@ -15,7 +15,12 @@ const bankAccountRoutes = require("./routes/bank_account.routes");
 const staffRoutes = require("./routes/staff.routes");
 const staffSalaryRoutes = require("./routes/staff_salary.routes");
 const salaryTypeRoutes = require("./routes/salary_type.routes");
+const financeTypesRoutes = require("./routes/finance_types.routes");
+const financeCategoriesRoutes = require("./routes/finance_categories.routes");
 const companyRoutes = require("./routes/company.routes");
+const financeRoutes = require("./routes/finance.routes");
+const incomeRoutes = require("./routes/income.routes");
+const expenseRoutes = require("./routes/expense.routes");
 
 const app = express();
 
@@ -35,7 +40,12 @@ app.use("/", bankAccountRoutes);
 app.use("/", staffRoutes);
 app.use("/", staffSalaryRoutes);
 app.use("/", salaryTypeRoutes);
+app.use("/", financeTypesRoutes);
+app.use("/", financeCategoriesRoutes);
 app.use("/", companyRoutes);
+app.use("/", financeRoutes);
+app.use("/", incomeRoutes);
+app.use("/", expenseRoutes);
 
 app.get("/", async (req, res) => {
   const result = await pool.query("SELECT current_database()");

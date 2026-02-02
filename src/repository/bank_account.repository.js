@@ -170,6 +170,34 @@ class BankAccountRepository {
       client.release();
     }
   }
+
+  // Add amount to bank account (for income)
+  async addBalance(bankAccountId, amount, transactionDate) {
+    const query = `
+      UPDATE bank_account 
+      SET current_balance = current_balance + $1,
+          last_transaction = $2,
+          updated_at = NOW()
+      WHERE bank_account_id = $3
+      RETURNING *
+    `;
+    const result = await pool.query(query, [amount, transactionDate, bankAccountId]);
+    return result.rows[0];
+  }
+
+  // Subtract amount from bank account (for expense)
+  async subtractBalance(bankAccountId, amount, transactionDate) {
+    const query = `
+      UPDATE bank_account 
+      SET current_balance = current_balance - $1,
+          last_transaction = $2,
+          updated_at = NOW()
+      WHERE bank_account_id = $3
+      RETURNING *
+    `;
+    const result = await pool.query(query, [amount, transactionDate, bankAccountId]);
+    return result.rows[0];
+  }
 }
 
 module.exports = new BankAccountRepository();
