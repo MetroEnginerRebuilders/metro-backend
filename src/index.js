@@ -21,6 +21,8 @@ const companyRoutes = require("./routes/company.routes");
 const financeRoutes = require("./routes/finance.routes");
 const incomeRoutes = require("./routes/income.routes");
 const expenseRoutes = require("./routes/expense.routes");
+const stockTransactionRoutes = require("./routes/stock_transaction.routes");
+const stockTransactionTypesRoutes = require("./routes/stock_transaction_types.routes");
 
 const app = express();
 
@@ -46,6 +48,8 @@ app.use("/", companyRoutes);
 app.use("/", financeRoutes);
 app.use("/", incomeRoutes);
 app.use("/", expenseRoutes);
+app.use("/", stockTransactionRoutes);
+app.use("/", stockTransactionTypesRoutes);
 
 app.get("/", async (req, res) => {
   const result = await pool.query("SELECT current_database()");

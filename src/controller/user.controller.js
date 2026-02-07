@@ -22,7 +22,7 @@ class UserController {
       if (!user) {
         return res.status(401).json({
           success: false,
-          message: "Invalid username or password",
+          message: "Invalid Username or Password",
         });
       }
 
@@ -32,7 +32,7 @@ class UserController {
       if (!isPasswordValid) {
         return res.status(401).json({
           success: false,
-          message: "Invalid username or password",
+          message: "Invalid Username or Password",
         });
       }
 
