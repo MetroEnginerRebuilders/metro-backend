@@ -1,16 +1,32 @@
 const pool = require("../config/database");
 
 class InvoiceItemRepository {
-  async addItems(invoiceId, items) {
+  async addItems(invoiceId, items, options = {}) {
     const client = await pool.connect();
 
     try {
       await client.query("BEGIN");
 
       const insertedItems = [];
+      const itemTypeIds = Array.from(
+        new Set(items.map(item => item.item_type_id).filter(Boolean))
+      );
+
+      const itemTypeResult = itemTypeIds.length
+        ? await client.query(
+            "SELECT item_type_id, item_type_code FROM item_types WHERE item_type_id = ANY($1)",
+            [itemTypeIds]
+          )
+        : { rows: [] };
+
+      const itemTypeCodeById = new Map(
+        itemTypeResult.rows.map(row => [row.item_type_id, row.item_type_code])
+      );
 
       for (const item of items) {
-        const totalPrice = (item.quantity || 0) * (item.unit_price || 0);
+        const quantity = Number(item.quantity) || 0;
+        const unitPrice = Number(item.unit_price) || 0;
+        const totalPrice = quantity * unitPrice;
 
         const query = `
           INSERT INTO invoice_items (
@@ -34,14 +50,147 @@ class InvoiceItemRepository {
           item.work_id || null,
           item.spare_id || null,
           item.remarks || item.type_of_work || null,
-          item.quantity || 0,
-          item.unit_price || 0,
+          quantity,
+          unitPrice,
           totalPrice,
           item.company_id || null,
           item.model_id || null,
         ]);
 
         insertedItems.push(result.rows[0]);
+      }
+
+      const spareItems = items.filter(
+        item => itemTypeCodeById.get(item.item_type_id) === "SPARE"
+      );
+
+      if (spareItems.length > 0) {
+        const resolvedShopId =
+          options.shopId || spareItems[0].shop_id || spareItems[0].shopId || null;
+
+        let bankAccountId = options.bankAccountId || null;
+        if (!bankAccountId) {
+          const bankResult = await client.query(
+            `
+            SELECT j.bank_account_id
+            FROM invoice i
+            INNER JOIN job j ON i.job_id = j.job_id
+            WHERE i.invoice_id = $1
+            `,
+            [invoiceId]
+          );
+          bankAccountId = bankResult.rows[0]?.bank_account_id || null;
+        }
+
+        if (!bankAccountId) {
+          throw new Error("bankAccountId is required for spare items");
+        }
+
+        const stockTypeResult = await client.query(
+          "SELECT stock_type_id FROM stock_types WHERE stock_type_code = 'RETURN'"
+        );
+        const stockTypeId = stockTypeResult.rows[0]?.stock_type_id;
+
+        if (!stockTypeId) {
+          throw new Error("RETURN stock type not found");
+        }
+
+        for (const item of spareItems) {
+          if (!item.company_id || !item.model_id || !item.spare_id) {
+            throw new Error("company_id, model_id, and spare_id are required for spare items");
+          }
+
+          const availableQuery = `
+            SELECT 
+              COALESCE(
+                SUM(
+                  CASE 
+                    WHEN stt.stock_type_code = 'PURCHASE' THEN sti.quantity
+                    WHEN stt.stock_type_code = 'RETURN' THEN -sti.quantity
+                    ELSE 0
+                  END
+                ), 
+                0
+              ) as available_quantity
+            FROM stock_transaction_items sti
+            JOIN stock_transaction st ON sti.stock_transaction_id = st.stock_transaction_id
+            JOIN stock_types stt ON st.stock_type_id = stt.stock_type_id
+            WHERE sti.company_id = $1 
+              AND sti.model_id = $2 
+              AND sti.spare_id = $3
+          `;
+
+          const availableResult = await client.query(availableQuery, [
+            item.company_id,
+            item.model_id,
+            item.spare_id,
+          ]);
+
+          const availableStock =
+            parseInt(availableResult.rows[0]?.available_quantity, 10) || 0;
+
+          if ((Number(item.quantity) || 0) > availableStock) {
+            throw new Error(
+              `Insufficient stock for spare_id ${item.spare_id}. Available ${availableStock}`
+            );
+          }
+        }
+
+        const orderDate =
+          options.orderDate || new Date().toISOString().split("T")[0];
+        const totalAmount = spareItems.reduce((sum, item) => {
+          return sum + (Number(item.quantity) || 0) * (Number(item.unit_price) || 0);
+        }, 0);
+
+        const description =
+          options.description || `Invoice ${invoiceId} returned stock`;
+
+        const stockTransactionResult = await client.query(
+          `
+          INSERT INTO stock_transaction (
+            shop_id,
+            stock_type_id,
+            order_date,
+            description,
+            bank_account_id,
+            total_amount
+          ) VALUES ($1, $2, $3, $4, $5, $6)
+          RETURNING stock_transaction_id
+          `,
+          [
+            resolvedShopId,
+            stockTypeId,
+            orderDate,
+            description,
+            bankAccountId,
+            totalAmount,
+          ]
+        );
+
+        const stockTransactionId =
+          stockTransactionResult.rows[0].stock_transaction_id;
+
+        const stockItemQuery = `
+          INSERT INTO stock_transaction_items (
+            stock_transaction_id,
+            company_id,
+            model_id,
+            spare_id,
+            quantity,
+            price
+          ) VALUES ($1, $2, $3, $4, $5, $6)
+        `;
+
+        for (const item of spareItems) {
+          await client.query(stockItemQuery, [
+            stockTransactionId,
+            item.company_id,
+            item.model_id,
+            item.spare_id,
+            Number(item.quantity) || 0,
+            Number(item.unit_price) || 0,
+          ]);
+        }
       }
 
       const updateInvoiceQuery = `
@@ -66,6 +215,65 @@ class InvoiceItemRepository {
 
       return {
         items: insertedItems,
+        invoice: invoiceResult.rows[0],
+      };
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async deleteItem(invoiceId, invoiceItemId) {
+    const client = await pool.connect();
+
+    try {
+      await client.query("BEGIN");
+
+      const itemResult = await client.query(
+        `
+        SELECT *
+        FROM invoice_items
+        WHERE invoice_id = $1 AND invoice_item_id = $2
+        `,
+        [invoiceId, invoiceItemId]
+      );
+
+      const deletedItem = itemResult.rows[0];
+
+      if (!deletedItem) {
+        await client.query("ROLLBACK");
+        return null;
+      }
+
+      await client.query(
+        "DELETE FROM invoice_items WHERE invoice_id = $1 AND invoice_item_id = $2",
+        [invoiceId, invoiceItemId]
+      );
+
+      const updateInvoiceQuery = `
+        UPDATE invoice
+        SET total_amount = (
+          SELECT COALESCE(SUM(CASE 
+            WHEN it.item_type_code = 'DISCOUNT' THEN -ii.total_price
+            ELSE ii.total_price
+          END), 0)
+          FROM invoice_items ii
+          LEFT JOIN item_types it ON ii.item_type_id = it.item_type_id
+          WHERE ii.invoice_id = $1
+        ),
+        updated_at = NOW()
+        WHERE invoice_id = $1
+        RETURNING *
+      `;
+
+      const invoiceResult = await client.query(updateInvoiceQuery, [invoiceId]);
+
+      await client.query("COMMIT");
+
+      return {
+        deletedItem,
         invoice: invoiceResult.rows[0],
       };
     } catch (error) {

@@ -205,7 +205,16 @@ class InvoiceController {
   async addItems(req, res) {
     try {
       const { invoiceId } = req.params;
-      const { items } = req.body;
+      const {
+        items,
+        shopId,
+        shop_id,
+        bankAccountId,
+        bank_account_id,
+        orderDate,
+        order_date,
+        description,
+      } = req.body;
 
       if (!items || !Array.isArray(items) || items.length === 0) {
         return res.status(400).json({
@@ -223,7 +232,12 @@ class InvoiceController {
         }
       }
 
-      const result = await invoiceItemRepository.addItems(invoiceId, items);
+      const result = await invoiceItemRepository.addItems(invoiceId, items, {
+        shopId: shopId || shop_id,
+        bankAccountId: bankAccountId || bank_account_id,
+        orderDate: orderDate || order_date,
+        description,
+      });
 
       res.status(201).json({
         success: true,
@@ -232,6 +246,35 @@ class InvoiceController {
       });
     } catch (error) {
       console.error("Add invoice items error:", error);
+      const message = error?.message || "Internal server error";
+      const status = message === "Internal server error" ? 500 : 400;
+      res.status(status).json({
+        success: false,
+        message,
+      });
+    }
+  }
+
+  async deleteItem(req, res) {
+    try {
+      const { invoiceId, invoiceItemId } = req.params;
+
+      const result = await invoiceItemRepository.deleteItem(invoiceId, invoiceItemId);
+
+      if (!result) {
+        return res.status(404).json({
+          success: false,
+          message: "Invoice item not found",
+        });
+      }
+
+      res.json({
+        success: true,
+        message: "Invoice item deleted successfully",
+        data: result,
+      });
+    } catch (error) {
+      console.error("Delete invoice item error:", error);
       res.status(500).json({
         success: false,
         message: "Internal server error",

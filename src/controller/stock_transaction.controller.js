@@ -16,10 +16,10 @@ const stockTransactionController = {
       } = req.body;
 
       // Validate required fields
-      if (!shopId || !transactionTypeId || !bankAccountId || !orderDate || !items || items.length === 0) {
+      if (!transactionTypeId || !bankAccountId || !orderDate || !items || items.length === 0) {
         return res.status(400).json({
           success: false,
-          message: 'Missing required fields: shopId, transactionTypeId, bankAccountId, orderDate, items'
+          message: 'Missing required fields: transactionTypeId, bankAccountId, orderDate, items'
         });
       }
 
@@ -61,7 +61,7 @@ const stockTransactionController = {
 
       // Prepare stock transaction data
       const stockTransactionData = {
-        shop_id: shopId,
+        shop_id: shopId || null,
         stock_type_id: transactionTypeId,
         order_date: orderDate,
         description: description || '',

@@ -9,5 +9,6 @@ router.get("/invoice/:invoiceId/details", invoiceController.getDetailsByInvoiceI
 router.get("/invoice/:invoiceId/customer", invoiceController.getCustomerByInvoiceId);
 router.get("/invoice/:invoiceId/job", invoiceController.getJobByInvoiceId);
 router.post("/invoice/:invoiceId/items", invoiceController.addItems);
+router.delete("/invoice/:invoiceId/items/:invoiceItemId", invoiceController.deleteItem);
 
 module.exports = router;
