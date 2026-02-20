@@ -86,11 +86,35 @@ class PDFGenerator {
 
     doc.y = Math.max(invoiceBottom, detailsTop + billHeight) + 12;
 
-    // Job Description
-    if (job?.description) {
-      doc.fontSize(11).font("Helvetica-Bold").text("Job Description:", 50, doc.y);
-      doc.fontSize(10).font("Helvetica").text(job.description, 50, doc.y, { width: 450 });
-      doc.moveDown(0.5);
+    // Job Description and Received Items (side by side)
+    if (job?.description || job?.received_items) {
+      const sectionTop = doc.y;
+      const leftX = 50;
+      const leftWidth = 240;
+      const rightX = 305;
+      const rightWidth = 240;
+
+      let leftY = sectionTop;
+      let rightY = sectionTop;
+
+      // Job Description (left side)
+      if (job?.description) {
+        doc.fontSize(11).font("Helvetica-Bold").text("Job Description", leftX, leftY, { width: leftWidth });
+        leftY = doc.y + 4;
+        doc.fontSize(10).font("Helvetica").text(job.description, leftX, leftY, { width: leftWidth });
+        leftY = doc.y;
+      }
+
+      // Received Items (right side)
+      if (job?.received_items) {
+        doc.fontSize(11).font("Helvetica-Bold").text("Received Items", rightX, sectionTop, { width: rightWidth });
+        rightY = doc.y + 4;
+        doc.fontSize(10).font("Helvetica").text(job.received_items, rightX, rightY, { width: rightWidth });
+        rightY = doc.y;
+      }
+
+      // Move doc.y to the bottom of the tallest section
+      doc.y = Math.max(leftY, rightY) + 8;
     }
 
     // Items Table Header

@@ -325,6 +325,7 @@ class InvoiceController {
         job: {
           job_number: details.job_number,
           description: details.job_description,
+          received_items: details.job_received_items,
         },
         customer: {
           customer_name: details.customer_name,
