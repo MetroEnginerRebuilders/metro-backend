@@ -1,5 +1,7 @@
 const invoiceRepository = require("../repository/invoice.repository");
 const invoiceItemRepository = require("../repository/invoice_item.repository");
+const pdfGenerator = require("../utils/pdfGenerator");
+const pool = require("../config/database");
 
 class InvoiceController {
   async getCustomerByInvoiceId(req, res) {
@@ -278,6 +280,77 @@ class InvoiceController {
       res.status(500).json({
         success: false,
         message: "Internal server error",
+      });
+    }
+  }
+
+  async downloadPDF(req, res) {
+    try {
+      const { invoiceId } = req.params;
+
+      const details = await invoiceRepository.findDetailsByInvoiceId(invoiceId);
+
+      if (!details) {
+        return res.status(404).json({
+          success: false,
+          message: "Invoice details not found",
+        });
+      }
+
+      const items = await invoiceRepository.findItemsByInvoiceId(invoiceId);
+
+      // Fetch company details
+      const companyQuery = `
+        SELECT company_name, executive_name, executive_phone_number
+        FROM company
+        LIMIT 1
+      `;
+      const companyResult = await pool.query(companyQuery);
+      const company = companyResult.rows[0];
+
+      const invoiceData = {
+        invoice: {
+          invoice_id: details.invoice_id,
+          invoice_number: details.invoice_number,
+          invoice_date: details.invoice_date,
+          total_amount: details.invoice_total_amount,
+          invoice_status: details.invoice_status,
+          payment_status: details.invoice_payment_status,
+        },
+        job: {
+          job_number: details.job_number,
+          description: details.job_description,
+        },
+        customer: {
+          customer_name: details.customer_name,
+          customer_address1: details.customer_address1,
+          customer_address2: details.customer_address2,
+          customer_phone_number: details.customer_phone_number,
+        },
+        items,
+        company,
+      };
+
+      res.setHeader("Content-Type", "application/pdf");
+      res.setHeader(
+        "Content-Disposition",
+        `attachment; filename="Invoice_${details.invoice_number}.pdf"`
+      );
+
+      pdfGenerator.generateInvoicePDF(invoiceData, res);
+    } catch (error) {
+      console.error("Download PDF error:", error);
+      
+      // If headers already sent, just end the response
+      if (res.headersSent) {
+        res.end();
+        return;
+      }
+
+      res.status(500).json({
+        success: false,
+        message: "Internal server error",
+        error: error.message,
       });
     }
   }
