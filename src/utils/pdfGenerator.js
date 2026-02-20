@@ -57,6 +57,10 @@ class PDFGenerator {
     doc.text(`Invoice Date: ${this.formatDate(invoice?.invoice_date)}`, invoiceX, invoiceY, { width: invoiceWidth });
     invoiceY = doc.y + 2;
     doc.text(`Job Number: ${job?.job_number || "N/A"}`, invoiceX, invoiceY, { width: invoiceWidth });
+    invoiceY = doc.y + 2;
+    doc.text(`Amount Paid: ${this.formatCurrency(invoice?.amount_paid || 0)}`, invoiceX, invoiceY, { width: invoiceWidth });
+    invoiceY = doc.y + 2;
+    doc.text(`Balance Amount: ${this.formatCurrency(invoice?.balance_amount || 0)}`, invoiceX, invoiceY, { width: invoiceWidth });
     const invoiceBottom = doc.y;
 
     // Bill To Information (right side)

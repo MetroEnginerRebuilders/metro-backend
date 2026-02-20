@@ -10,6 +10,7 @@ router.get("/invoice/:invoiceId/details", invoiceController.getDetailsByInvoiceI
 router.get("/invoice/:invoiceId/customer", invoiceController.getCustomerByInvoiceId);
 router.get("/invoice/:invoiceId/job", invoiceController.getJobByInvoiceId);
 router.get("/invoice/:invoiceId/download-pdf", invoiceController.downloadPDF);
+router.get("/invoice/:invoiceId/payments", invoicePaymentController.listByInvoiceId);
 router.post("/invoice/:invoiceId/items", invoiceController.addItems);
 router.delete("/invoice/:invoiceId/items/:invoiceItemId", invoiceController.deleteItem);
 router.post("/invoice/payment", invoicePaymentController.addPayment);

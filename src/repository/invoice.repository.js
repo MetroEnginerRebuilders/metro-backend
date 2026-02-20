@@ -50,6 +50,12 @@ class InvoiceRepository {
         i.total_amount AS invoice_total_amount,
         i.invoice_status AS invoice_status,
         i.payment_status AS invoice_payment_status,
+        COALESCE(ip.total_paid, 0) AS invoice_payment_total_amount,
+        (COALESCE(j.advance_amount, 0) + COALESCE(ip.total_paid, 0)) AS invoice_amount_paid,
+        GREATEST(
+          COALESCE(i.total_amount, 0) - (COALESCE(j.advance_amount, 0) + COALESCE(ip.total_paid, 0)),
+          0
+        ) AS invoice_balance_amount,
         i.created_at AS invoice_created_at,
         i.updated_at AS invoice_updated_at,
         j.job_id AS job_id,
@@ -75,6 +81,11 @@ class InvoiceRepository {
       FROM invoice i
       INNER JOIN job j ON i.job_id = j.job_id
       INNER JOIN customer c ON i.customer_id = c.customer_id
+      LEFT JOIN (
+        SELECT invoice_id, SUM(amount_paid) AS total_paid
+        FROM invoice_payment
+        GROUP BY invoice_id
+      ) ip ON ip.invoice_id = i.invoice_id
       WHERE i.invoice_id = $1
     `;
     const result = await pool.query(query, [invoiceId]);

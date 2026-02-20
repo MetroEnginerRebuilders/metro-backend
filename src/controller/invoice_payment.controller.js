@@ -1,9 +1,42 @@
 const invoicePaymentRepository = require("../repository/invoice_payment.repository");
 
 class InvoicePaymentController {
+  async listByInvoiceId(req, res) {
+    try {
+      const { invoiceId } = req.params;
+
+      if (!invoiceId) {
+        return res.status(400).json({ error: "invoiceId is required" });
+      }
+
+      const result = await invoicePaymentRepository.findByInvoiceId(invoiceId);
+
+      res.json({
+        success: true,
+        message: "Invoice payments fetched successfully",
+        data: {
+          invoice_id: invoiceId,
+          summary: {
+            payment_count: Number(result.summary?.payment_count || 0),
+            total_paid: Number(result.summary?.total_paid || 0),
+          },
+          payments: result.payments,
+        },
+      });
+    } catch (error) {
+      console.error("Error fetching invoice payments:", error);
+
+      if (error.message === "Invoice not found") {
+        return res.status(404).json({ error: "Invoice not found" });
+      }
+
+      res.status(500).json({ error: "Internal server error" });
+    }
+  }
+
   async addPayment(req, res) {
     try {
-      const { amount_paid, bank_account_id, invoice_id, payment_date, remarks } = req.body;
+      const { amount_paid, bank_account_id, invoice_id, payment_date, remarks, status } = req.body;
 
       // Validation
       if (!invoice_id) {
@@ -27,12 +60,17 @@ class InvoicePaymentController {
         return res.status(400).json({ error: "amount_paid must be a positive number" });
       }
 
+      if (typeof status !== "boolean") {
+        return res.status(400).json({ error: "status must be true or false" });
+      }
+
       const paymentData = {
         invoice_id,
         bank_account_id,
         amount_paid: amountNum,
         payment_date,
         remarks: remarks || null,
+        status,
       };
 
       const result = await invoicePaymentRepository.addPayment(paymentData);

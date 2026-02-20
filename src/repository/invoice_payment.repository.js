@@ -1,6 +1,56 @@
 const pool = require("../config/database");
 
 class InvoicePaymentRepository {
+  async findByInvoiceId(invoiceId) {
+    const invoiceExistsQuery = `
+      SELECT invoice_id
+      FROM invoice
+      WHERE invoice_id = $1
+    `;
+    const invoiceExistsResult = await pool.query(invoiceExistsQuery, [invoiceId]);
+
+    if (!invoiceExistsResult.rows[0]) {
+      throw new Error("Invoice not found");
+    }
+
+    const paymentsQuery = `
+      SELECT
+        ip.invoice_payment_id,
+        ip.invoice_id,
+        ip.bank_account_id,
+        ip.amount_paid,
+        ip.remarks,
+        ip.payment_date,
+        ip.status,
+        ip.created_at,
+        ip.updated_at,
+        ba.account_name,
+        ba.account_number
+      FROM invoice_payment ip
+      LEFT JOIN bank_account ba ON ip.bank_account_id = ba.bank_account_id
+      WHERE ip.invoice_id = $1
+      ORDER BY ip.payment_date ASC, ip.created_at ASC
+    `;
+
+    const summaryQuery = `
+      SELECT
+        COUNT(*)::INT AS payment_count,
+        COALESCE(SUM(amount_paid), 0) AS total_paid
+      FROM invoice_payment
+      WHERE invoice_id = $1
+    `;
+
+    const [paymentsResult, summaryResult] = await Promise.all([
+      pool.query(paymentsQuery, [invoiceId]),
+      pool.query(summaryQuery, [invoiceId]),
+    ]);
+
+    return {
+      payments: paymentsResult.rows,
+      summary: summaryResult.rows[0],
+    };
+  }
+
   async addPayment(paymentData) {
     const client = await pool.connect();
 
@@ -20,6 +70,7 @@ class InvoicePaymentRepository {
 
       const invoice = invoiceResult.rows[0];
       const amountPaid = Number(paymentData.amount_paid) || 0;
+      const paymentStatus = paymentData.status === true;
 
       if (amountPaid <= 0) {
         throw new Error("amount_paid must be greater than 0");
@@ -58,7 +109,7 @@ class InvoicePaymentRepository {
         amountPaid,
         paymentData.remarks || null,
         paymentData.payment_date,
-        "paid",
+        paymentStatus ? "true" : "false",
       ]);
 
       const payment = paymentResult.rows[0];
@@ -80,35 +131,47 @@ class InvoicePaymentRepository {
         paymentData.bank_account_id,
       ]);
 
-      // Update invoice statuses
-      const invoiceUpdateQuery = `
-        UPDATE invoice
-        SET 
-          payment_status = 'paid',
-          invoice_status = 'closed',
-          updated_at = NOW()
-        WHERE invoice_id = $1
-        RETURNING *
-      `;
+      let updatedInvoice;
 
-      const updatedInvoiceResult = await client.query(invoiceUpdateQuery, [
-        paymentData.invoice_id,
-      ]);
-
-      const updatedInvoice = updatedInvoiceResult.rows[0];
-
-      // Update job status if exists
-      if (invoice.job_id) {
-        const jobUpdateQuery = `
-          UPDATE job
+      if (paymentStatus) {
+        const invoiceUpdateQuery = `
+          UPDATE invoice
           SET 
-            status = 'completed',
+            payment_status = 'paid',
+            invoice_status = 'closed',
             updated_at = NOW()
-          WHERE job_id = $1
+          WHERE invoice_id = $1
           RETURNING *
         `;
 
-        await client.query(jobUpdateQuery, [invoice.job_id]);
+        const updatedInvoiceResult = await client.query(invoiceUpdateQuery, [
+          paymentData.invoice_id,
+        ]);
+
+        updatedInvoice = updatedInvoiceResult.rows[0];
+
+        if (invoice.job_id) {
+          const jobUpdateQuery = `
+            UPDATE job
+            SET 
+              status = 'completed',
+              updated_at = NOW()
+            WHERE job_id = $1
+            RETURNING *
+          `;
+
+          await client.query(jobUpdateQuery, [invoice.job_id]);
+        }
+      } else {
+        const currentInvoiceQuery = `
+          SELECT *
+          FROM invoice
+          WHERE invoice_id = $1
+        `;
+        const currentInvoiceResult = await client.query(currentInvoiceQuery, [
+          paymentData.invoice_id,
+        ]);
+        updatedInvoice = currentInvoiceResult.rows[0];
       }
 
       await client.query("COMMIT");
