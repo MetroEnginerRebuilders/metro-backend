@@ -1,6 +1,322 @@
 const pool = require("../config/database");
 
 class JobRepository {
+  async findById(jobId) {
+    const query = `
+      SELECT
+        j.job_id,
+        j.job_number,
+        j.customer_id,
+        j.description,
+        j.advance_amount,
+        j.bank_account_id,
+        j.received_items,
+        j.start_date,
+        j.status,
+        j.created_at,
+        j.updated_at,
+        c.customer_id,
+        c.customer_number,
+        c.customer_name,
+        c.customer_address1,
+        c.customer_address2,
+        c.customer_phone_number,
+        c.customer_type_id,
+        c.created_at AS customer_created_at,
+        c.updated_at AS customer_updated_at,
+        ba.bank_account_id,
+        ba.account_name,
+        ba.account_number,
+        ba.current_balance,
+        ba.opening_balance,
+        ba.activate_date,
+        ba.inactivate_date,
+        ba.last_transaction,
+        ba.created_at AS bank_created_at,
+        ba.updated_at AS bank_updated_at
+      FROM job j
+      LEFT JOIN customer c ON j.customer_id = c.customer_id
+      LEFT JOIN bank_account ba ON j.bank_account_id = ba.bank_account_id
+      WHERE j.job_id = $1
+    `;
+    const result = await pool.query(query, [jobId]);
+    return result.rows[0];
+  }
+
+  async updateById(jobId, updateData) {
+    const client = await pool.connect();
+
+    try {
+      await client.query("BEGIN");
+
+      const currentJobResult = await client.query(
+        `
+        SELECT job_id, advance_amount, bank_account_id
+        FROM job
+        WHERE job_id = $1
+        FOR UPDATE
+        `,
+        [jobId]
+      );
+
+      const currentJob = currentJobResult.rows[0];
+      if (!currentJob) {
+        await client.query("ROLLBACK");
+        return null;
+      }
+
+      const currentAdvance = Number(currentJob.advance_amount) || 0;
+      const newAdvance = updateData.advance_amount !== null ? Number(updateData.advance_amount) : currentAdvance;
+      const currentBankId = currentJob.bank_account_id;
+      const newBankId = updateData.bank_account_id;
+
+      // Scenario 1: Amount decreased (e.g., 1000 -> 750, subtract 250)
+      if (newAdvance < currentAdvance && currentBankId) {
+        const deductAmount = currentAdvance - newAdvance;
+        await client.query(
+          `
+          UPDATE bank_account
+          SET current_balance = current_balance - $1,
+              last_transaction = NOW(),
+              updated_at = NOW()
+          WHERE bank_account_id = $2
+          `,
+          [deductAmount, currentBankId]
+        );
+      }
+      // Scenario 2: Amount increased (e.g., 1000 -> 1500, add 500)
+      else if (newAdvance > currentAdvance && newBankId) {
+        const addAmount = newAdvance - currentAdvance;
+        await client.query(
+          `
+          UPDATE bank_account
+          SET current_balance = current_balance + $1,
+              last_transaction = NOW(),
+              updated_at = NOW()
+          WHERE bank_account_id = $2
+          `,
+          [addAmount, newBankId]
+        );
+      }
+
+      // Scenario 3: Amount unchanged but bank changed (subtract from old, add to new)
+      if (newAdvance === currentAdvance && currentBankId !== newBankId && currentAdvance > 0) {
+        if (currentBankId) {
+          await client.query(
+            `
+            UPDATE bank_account
+            SET current_balance = current_balance - $1,
+                last_transaction = NOW(),
+                updated_at = NOW()
+            WHERE bank_account_id = $2
+            `,
+            [currentAdvance, currentBankId]
+          );
+        }
+        if (newBankId) {
+          await client.query(
+            `
+            UPDATE bank_account
+            SET current_balance = current_balance + $1,
+                last_transaction = NOW(),
+                updated_at = NOW()
+            WHERE bank_account_id = $2
+            `,
+            [newAdvance, newBankId]
+          );
+        }
+      }
+
+      // Scenario 4: Both amount and bank changed (subtract old from old bank, add new to new bank)
+      if (newAdvance !== currentAdvance && currentBankId !== newBankId) {
+        if (currentBankId && currentAdvance > 0) {
+          await client.query(
+            `
+            UPDATE bank_account
+            SET current_balance = current_balance - $1,
+                last_transaction = NOW(),
+                updated_at = NOW()
+            WHERE bank_account_id = $2
+            `,
+            [currentAdvance, currentBankId]
+          );
+        }
+        if (newBankId && newAdvance > 0) {
+          await client.query(
+            `
+            UPDATE bank_account
+            SET current_balance = current_balance + $1,
+                last_transaction = NOW(),
+                updated_at = NOW()
+            WHERE bank_account_id = $2
+            `,
+            [newAdvance, newBankId]
+          );
+        }
+      }
+
+      const updateJobQuery = `
+        UPDATE job
+        SET 
+          customer_id = COALESCE($1, customer_id),
+          description = COALESCE($2, description),
+          advance_amount = COALESCE($3, advance_amount),
+          bank_account_id = COALESCE($4, bank_account_id),
+          start_date = COALESCE($5, start_date),
+          received_items = COALESCE($6, received_items),
+          updated_at = NOW()
+        WHERE job_id = $7
+        RETURNING *
+      `;
+
+      const updateResult = await client.query(updateJobQuery, [
+        updateData.customer_id || null,
+        updateData.description || null,
+        updateData.advance_amount !== null ? updateData.advance_amount : null,
+        updateData.bank_account_id || null,
+        updateData.start_date || null,
+        updateData.received_items || null,
+        jobId,
+      ]);
+
+      await client.query("COMMIT");
+
+      return updateResult.rows[0];
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async deleteById(jobId) {
+    const client = await pool.connect();
+
+    try {
+      await client.query("BEGIN");
+
+      const jobResult = await client.query(
+        `
+        SELECT job_id, job_number, advance_amount, bank_account_id
+        FROM job
+        WHERE job_id = $1
+        FOR UPDATE
+        `,
+        [jobId]
+      );
+
+      const job = jobResult.rows[0];
+      if (!job) {
+        await client.query("ROLLBACK");
+        return null;
+      }
+
+      const invoiceResult = await client.query(
+        `
+        SELECT invoice_id, invoice_number
+        FROM invoice
+        WHERE job_id = $1
+        FOR UPDATE
+        `,
+        [jobId]
+      );
+
+      const invoice = invoiceResult.rows[0];
+      let deletedInvoiceItems = 0;
+      let deletedInvoice = null;
+
+      if (invoice) {
+        const paymentSumsResult = await client.query(
+          `
+          SELECT bank_account_id, COALESCE(SUM(amount_paid), 0) AS total_paid
+          FROM invoice_payment
+          WHERE invoice_id = $1
+          GROUP BY bank_account_id
+          `,
+          [invoice.invoice_id]
+        );
+
+        for (const row of paymentSumsResult.rows) {
+          if (!row.bank_account_id) {
+            continue;
+          }
+
+          const totalPaid = Number(row.total_paid) || 0;
+          if (totalPaid <= 0) {
+            continue;
+          }
+
+          await client.query(
+            `
+            UPDATE bank_account
+            SET current_balance = current_balance - $1,
+                last_transaction = NOW(),
+                updated_at = NOW()
+            WHERE bank_account_id = $2
+            `,
+            [totalPaid, row.bank_account_id]
+          );
+        }
+
+        const deleteItemsResult = await client.query(
+          `
+          DELETE FROM invoice_items
+          WHERE invoice_id = $1
+          `,
+          [invoice.invoice_id]
+        );
+        deletedInvoiceItems = deleteItemsResult.rowCount || 0;
+
+        const deleteInvoiceResult = await client.query(
+          `
+          DELETE FROM invoice
+          WHERE invoice_id = $1
+          RETURNING *
+          `,
+          [invoice.invoice_id]
+        );
+        deletedInvoice = deleteInvoiceResult.rows[0] || null;
+      }
+
+      const advanceAmount = Number(job.advance_amount) || 0;
+      if (job.bank_account_id && advanceAmount > 0) {
+        await client.query(
+          `
+          UPDATE bank_account
+          SET current_balance = current_balance - $1,
+              last_transaction = NOW(),
+              updated_at = NOW()
+          WHERE bank_account_id = $2
+          `,
+          [advanceAmount, job.bank_account_id]
+        );
+      }
+
+      const deleteJobResult = await client.query(
+        `
+        DELETE FROM job
+        WHERE job_id = $1
+        RETURNING *
+        `,
+        [jobId]
+      );
+
+      await client.query("COMMIT");
+
+      return {
+        job: deleteJobResult.rows[0],
+        invoice: deletedInvoice,
+        deleted_invoice_items_count: deletedInvoiceItems,
+      };
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
   async findAll(searchTerm = "", page = 1, limit = 10) {
     const offset = (page - 1) * limit;
 

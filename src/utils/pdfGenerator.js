@@ -58,9 +58,7 @@ class PDFGenerator {
     invoiceY = doc.y + 2;
     doc.text(`Job Number: ${job?.job_number || "N/A"}`, invoiceX, invoiceY, { width: invoiceWidth });
     invoiceY = doc.y + 2;
-    doc.text(`Amount Paid: ${this.formatCurrency(invoice?.amount_paid || 0)}`, invoiceX, invoiceY, { width: invoiceWidth });
-    invoiceY = doc.y + 2;
-    doc.text(`Balance Amount: ${this.formatCurrency(invoice?.balance_amount || 0)}`, invoiceX, invoiceY, { width: invoiceWidth });
+    
     const invoiceBottom = doc.y;
 
     // Bill To Information (right side)
@@ -117,7 +115,7 @@ class PDFGenerator {
       doc.y = Math.max(leftY, rightY) + 8;
     }
 
-    // Items Table Header
+    // Items Table HeaderF
     doc.moveTo(50, doc.y).lineTo(545, doc.y).stroke();
     doc.moveDown(0.3);
 
@@ -179,8 +177,8 @@ class PDFGenerator {
 
   formatCurrency(amount) {
     return new Intl.NumberFormat("en-US", {
-      style: "currency",
-      currency: "USD",
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
     }).format(amount);
   }
 }
