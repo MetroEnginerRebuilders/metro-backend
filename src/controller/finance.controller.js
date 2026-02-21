@@ -268,6 +268,86 @@ class FinanceController {
       });
     }
   }
+
+  async getMonthlyReport(req, res) {
+    try {
+      const { month, year } = req.body;
+
+      if (!month || !year) {
+        return res.status(400).json({
+          success: false,
+          message: "Month and year are required",
+        });
+      }
+
+      const monthNum = new Date(`${month} 1, ${year}`).getMonth() + 1;
+      if (isNaN(monthNum)) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid month or year",
+        });
+      }
+
+      const report = await financeRepository.getMonthlyReport(monthNum, parseInt(year));
+
+      res.json({
+        success: true,
+        message: "Monthly report generated successfully",
+        data: report,
+      });
+    } catch (error) {
+      console.error("Get monthly report error:", error);
+      res.status(500).json({
+        success: false,
+        message: "Internal server error",
+      });
+    }
+  }
+
+  async downloadMonthlyReportPDF(req, res) {
+    try {
+      const { month, year } = req.body;
+
+      if (!month || !year) {
+        return res.status(400).json({
+          success: false,
+          message: "Month and year are required",
+        });
+      }
+
+      const monthNum = new Date(`${month} 1, ${year}`).getMonth() + 1;
+      if (isNaN(monthNum)) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid month or year",
+        });
+      }
+
+      const report = await financeRepository.getMonthlyReport(monthNum, parseInt(year));
+
+      res.setHeader("Content-Type", "application/pdf");
+      res.setHeader(
+        "Content-Disposition",
+        `attachment; filename="Monthly_Report_${report.month}_${report.year}.pdf"`
+      );
+
+      const monthlyReportPDFGenerator = require("../utils/monthlyReportPDFGenerator");
+      monthlyReportPDFGenerator.generateMonthlyReportPDF(report, res);
+    } catch (error) {
+      console.error("Download monthly report PDF error:", error);
+
+      if (res.headersSent) {
+        res.end();
+        return;
+      }
+
+      res.status(500).json({
+        success: false,
+        message: "Internal server error",
+        error: error.message,
+      });
+    }
+  }
 }
 
 module.exports = new FinanceController();
