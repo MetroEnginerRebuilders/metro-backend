@@ -132,6 +132,11 @@ class PDFGenerator {
     // Items
     doc.font("Helvetica").fontSize(9);
     items?.forEach((item) => {
+      // Skip commission items - only show in list, not in invoice total
+      if (item.item_type_code === "COMMISSION") {
+        return;
+      }
+
       const description = item.item_type_code === "SPARE" 
         ? `${item.spare_name || item.item_type_name}` 
         : item.item_type_name || "N/A";

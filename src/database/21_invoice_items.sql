@@ -11,6 +11,7 @@ CREATE TABLE IF NOT EXISTS invoice_items (
     total_price DECIMAL(15, 2) NOT NULL,
     company_id UUID,
     model_id UUID,
+    finance_id UUID,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT fk_invoice_items_invoice FOREIGN KEY (invoice_id)
@@ -27,7 +28,11 @@ CREATE TABLE IF NOT EXISTS invoice_items (
         ON DELETE RESTRICT,
     CONSTRAINT fk_invoice_items_model FOREIGN KEY (model_id)
         REFERENCES model(model_id)
-        ON DELETE RESTRICT
+        ON DELETE RESTRICT,
+    CONSTRAINT fk_invoice_items_finance 
+        FOREIGN KEY (finance_id) 
+        REFERENCES finance(finance_id) 
+        ON DELETE SET NULL
 );
 
 -- Create indexes for faster lookups
@@ -37,3 +42,5 @@ CREATE INDEX IF NOT EXISTS idx_invoice_items_work_id ON invoice_items(work_id);
 CREATE INDEX IF NOT EXISTS idx_invoice_items_spare_id ON invoice_items(spare_id);
 CREATE INDEX IF NOT EXISTS idx_invoice_items_company_id ON invoice_items(company_id);
 CREATE INDEX IF NOT EXISTS idx_invoice_items_model_id ON invoice_items(model_id);
+CREATE INDEX IF NOT EXISTS idx_invoice_items_finance_id ON invoice_items(finance_id);
+

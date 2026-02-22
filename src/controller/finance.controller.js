@@ -180,12 +180,13 @@ class FinanceController {
     }
   }
 
-  // Delete income finance record
+  // Delete finance record (income or expense based on financeTypeCode)
   async delete(req, res) {
     try {
       const { id } = req.params;
-      
-      // Verify it's an income record before deleting
+      const { financeTypeCode } = req.query;
+
+      // Verify record exists
       const record = await financeRepository.findById(id);
       if (!record) {
         return res.status(404).json({
@@ -194,19 +195,33 @@ class FinanceController {
         });
       }
 
-      const incomeTypeId = await financeRepository.getIncomeTypeId();
-      if (record.finance_type_id !== incomeTypeId) {
-        return res.status(400).json({
-          success: false,
-          message: "Record is not an income transaction and cannot be deleted through this endpoint",
-        });
+      // If financeTypeCode is provided, verify it matches
+      if (financeTypeCode) {
+        if (financeTypeCode === 'INCOME') {
+          const incomeTypeId = await financeRepository.getIncomeTypeId();
+          if (record.finance_type_id !== incomeTypeId) {
+            return res.status(400).json({
+              success: false,
+              message: "Record is not an income transaction",
+            });
+          }
+        } else if (financeTypeCode === 'EXPENSE') {
+          const expenseTypeId = await financeRepository.getExpenseTypeId();
+          if (record.finance_type_id !== expenseTypeId) {
+            return res.status(400).json({
+              success: false,
+              message: "Record is not an expense transaction",
+            });
+          }
+        }
       }
 
+      // Delete finance and related invoice items
       const finance = await financeRepository.delete(id);
 
       res.json({
         success: true,
-        message: "Income finance record deleted successfully",
+        message: "Finance record deleted successfully",
         data: finance,
       });
     } catch (error) {

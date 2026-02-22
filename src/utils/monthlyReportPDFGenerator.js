@@ -62,7 +62,7 @@ class MonthlyReportPDFGenerator {
         "Auto": "auto",
         "Commission": "commission",
         "Mobile": "mobile",
-        "Other": "other",
+        "Other Expenses": "other",
       };
 
       // Draw data rows
@@ -91,10 +91,10 @@ class MonthlyReportPDFGenerator {
           doc.fontSize(8).font("Helvetica");
         }
 
-        // Build expense map for this day
+        // Build expense map for this day - accumulate expenses by category
         const dayExpenseMap = {};
         day.expenses.forEach(exp => {
-          dayExpenseMap[exp.expense_type] = Number(exp.amount);
+          dayExpenseMap[exp.expense_type] = (dayExpenseMap[exp.expense_type] || 0) + Number(exp.amount);
         });
 
         // Draw row
@@ -106,8 +106,9 @@ class MonthlyReportPDFGenerator {
         doc.text(day.day.toString(), x + 2, rowY + 5, { width: colWidth - 4, align: "center" });
         x += colWidth;
 
-        // Expense categories
-        Object.keys(expenseMap).forEach(category => {
+        // Expense categories before Salary (Food to Parcel)
+        const beforeSalaryCategories = ["Food", "Spare", "Stationary", "Petrol", "Field", "Parcel"];
+        beforeSalaryCategories.forEach(category => {
           doc.rect(x, rowY, colWidth, rowHeight).stroke();
           const amount = dayExpenseMap[category];
           const displayValue = amount ? this.formatCurrency(amount) : "-";
@@ -120,6 +121,16 @@ class MonthlyReportPDFGenerator {
         const salaryValue = day.salary ? this.formatCurrency(day.salary) : "-";
         doc.text(salaryValue, x + 2, rowY + 5, { width: colWidth - 4, align: "center" });
         x += colWidth;
+
+        // Expense categories after Salary (Material to Other Expenses)
+        const afterSalaryCategories = ["Material", "Auto", "Commission", "Mobile", "Other Expenses"];
+        afterSalaryCategories.forEach(category => {
+          doc.rect(x, rowY, colWidth, rowHeight).stroke();
+          const amount = dayExpenseMap[category];
+          const displayValue = amount ? this.formatCurrency(amount) : "-";
+          doc.text(displayValue, x + 2, rowY + 5, { width: colWidth - 4, align: "center" });
+          x += colWidth;
+        });
 
         // Total expenses
         doc.rect(x, rowY, colWidth, rowHeight).stroke();

@@ -95,9 +95,40 @@ class FinanceRepository {
 
   // Delete finance record
   async delete(financeId) {
-    const query = "DELETE FROM finance WHERE finance_id = $1 RETURNING *";
-    const result = await pool.query(query, [financeId]);
-    return result.rows[0];
+    const client = await pool.connect();
+
+    try {
+      await client.query("BEGIN");
+
+      // Check if there's an invoice_item with this finance_id
+      const invoiceItemResult = await client.query(
+        "SELECT invoice_item_id FROM invoice_items WHERE finance_id = $1",
+        [financeId]
+      );
+
+      // Delete associated invoice_item if it exists
+      if (invoiceItemResult.rows.length > 0) {
+        for (const item of invoiceItemResult.rows) {
+          await client.query(
+            "DELETE FROM invoice_items WHERE invoice_item_id = $1",
+            [item.invoice_item_id]
+          );
+        }
+      }
+
+      // Delete finance record
+      const query = "DELETE FROM finance WHERE finance_id = $1 RETURNING *";
+      const result = await client.query(query, [financeId]);
+
+      await client.query("COMMIT");
+
+      return result.rows[0];
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 
   // Get finance records by date range

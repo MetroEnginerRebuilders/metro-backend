@@ -58,6 +58,82 @@ class InvoiceItemRepository {
         ]);
 
         insertedItems.push(result.rows[0]);
+
+        // Handle commission items - add to finance table
+        const itemTypeCode = itemTypeCodeById.get(item.item_type_id);
+        if (itemTypeCode === "COMMISSION") {
+          const commissionBankAccountId = item.bank_account_id || options.bankAccountId;
+          
+          if (!commissionBankAccountId) {
+            throw new Error("bank_account_id is required for commission items");
+          }
+
+          // Get finance_type_id for EXPENSE
+          const financeTypeResult = await client.query(
+            "SELECT finance_type_id FROM finance_types WHERE finance_type_code = 'EXPENSE'"
+          );
+          const financeTypeId = financeTypeResult.rows[0]?.finance_type_id;
+
+          if (!financeTypeId) {
+            throw new Error("EXPENSE finance type not found");
+          }
+
+          // Get finance_category_id for Commission
+          const financeCategoryResult = await client.query(
+            "SELECT finance_category_id FROM finance_categories WHERE finance_category_name = 'Commission' AND finance_type_id = $1",
+            [financeTypeId]
+          );
+          const financeCategoryId = financeCategoryResult.rows[0]?.finance_category_id;
+
+          if (!financeCategoryId) {
+            throw new Error("Commission finance category not found");
+          }
+
+          // Get invoice number for description
+          const invoiceResult = await client.query(
+            "SELECT invoice_number FROM invoice WHERE invoice_id = $1",
+            [invoiceId]
+          );
+          const invoiceNumber = invoiceResult.rows[0]?.invoice_number || invoiceId;
+
+          // Insert into finance table
+          const financeQuery = `
+            INSERT INTO finance (
+              bank_account_id,
+              finance_category_id,
+              finance_type_id,
+              amount,
+              transaction_date,
+              description,
+              remarks
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+            RETURNING *
+          `;
+
+          const financeResult = await client.query(financeQuery, [
+            commissionBankAccountId,
+            financeCategoryId,
+            financeTypeId,
+            unitPrice,
+            new Date().toISOString().split('T')[0],
+            `Commission for invoice ${invoiceNumber}`,
+            item.remarks || null
+          ]);
+
+          const financeRecord = financeResult.rows[0];
+
+          // Update invoice_items with finance_id
+          await client.query(
+            "UPDATE invoice_items SET finance_id = $1 WHERE invoice_item_id = $2",
+            [financeRecord.finance_id, result.rows[0].invoice_item_id]
+          );
+
+          // Update bank account balance (deduct commission)
+          await client.query(
+            "UPDATE bank_account SET current_balance = current_balance - $1, updated_at = NOW() WHERE bank_account_id = $2",
+            [unitPrice, commissionBankAccountId]
+          );
+        }
       }
 
       const spareItems = items.filter(
@@ -198,6 +274,7 @@ class InvoiceItemRepository {
         SET total_amount = (
           SELECT COALESCE(SUM(CASE 
             WHEN it.item_type_code = 'DISCOUNT' THEN -ii.total_price
+            WHEN it.item_type_code = 'COMMISSION' THEN 0
             ELSE ii.total_price
           END), 0)
           FROM invoice_items ii
@@ -233,9 +310,10 @@ class InvoiceItemRepository {
 
       const itemResult = await client.query(
         `
-        SELECT *
-        FROM invoice_items
-        WHERE invoice_id = $1 AND invoice_item_id = $2
+        SELECT ii.*, it.item_type_code
+        FROM invoice_items ii
+        LEFT JOIN item_types it ON ii.item_type_id = it.item_type_id
+        WHERE ii.invoice_id = $1 AND ii.invoice_item_id = $2
         `,
         [invoiceId, invoiceItemId]
       );
@@ -245,6 +323,33 @@ class InvoiceItemRepository {
       if (!deletedItem) {
         await client.query("ROLLBACK");
         return null;
+      }
+
+      // If commission item, delete from finance table and restore bank balance
+      if (deletedItem.item_type_code === 'COMMISSION' && deletedItem.finance_id) {
+        // Get finance record to get amount and bank account id
+        const financeRecord = await client.query(
+          "SELECT amount, bank_account_id FROM finance WHERE finance_id = $1",
+          [deletedItem.finance_id]
+        );
+
+        if (financeRecord.rows.length > 0) {
+          const finance = financeRecord.rows[0];
+          const financeAmount = finance.amount;
+          const commissionBankAccountId = finance.bank_account_id;
+
+          // Delete from finance table by finance_id
+          await client.query(
+            "DELETE FROM finance WHERE finance_id = $1",
+            [deletedItem.finance_id]
+          );
+
+          // Restore bank account balance (add back the commission amount)
+          await client.query(
+            "UPDATE bank_account SET current_balance = current_balance + $1, updated_at = NOW() WHERE bank_account_id = $2",
+            [financeAmount, commissionBankAccountId]
+          );
+        }
       }
 
       await client.query(
@@ -257,6 +362,7 @@ class InvoiceItemRepository {
         SET total_amount = (
           SELECT COALESCE(SUM(CASE 
             WHEN it.item_type_code = 'DISCOUNT' THEN -ii.total_price
+            WHEN it.item_type_code = 'COMMISSION' THEN 0
             ELSE ii.total_price
           END), 0)
           FROM invoice_items ii

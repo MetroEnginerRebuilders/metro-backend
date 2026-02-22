@@ -12,5 +12,6 @@ INSERT INTO item_types (item_type_name, item_type_code)
 VALUES
     ('Work', 'WORK'),
     ('Spare', 'SPARE'),
-    ('Discount', 'DISCOUNT')
+    ('Discount', 'DISCOUNT'),
+    ('Commission', 'COMMISSION')
 ON CONFLICT (item_type_name) DO NOTHING;

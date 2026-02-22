@@ -70,8 +70,13 @@ SELECT 'Auto', finance_type_id FROM finance_types WHERE finance_type_code = 'EXP
 ON CONFLICT DO NOTHING;
 
 INSERT INTO finance_categories (finance_category_name, finance_type_id)
-SELECT 'Commision', finance_type_id FROM finance_types WHERE finance_type_code = 'EXPENSE'
+SELECT 'Commission', finance_type_id FROM finance_types WHERE finance_type_code = 'EXPENSE'
 ON CONFLICT DO NOTHING;
+
+-- Update existing misspelled Commission entries to correct spelling
+-- UPDATE finance_categories 
+-- SET finance_category_name = 'Commission' 
+-- WHERE finance_category_name = 'Commision';
 
 INSERT INTO finance_categories (finance_category_name, finance_type_id)
 SELECT 'Mobile', finance_type_id FROM finance_types WHERE finance_type_code = 'EXPENSE'
