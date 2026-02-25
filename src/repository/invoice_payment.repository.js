@@ -1,17 +1,35 @@
 const pool = require("../config/database");
+const dailyTransactionRepository = require("./daily_transaction.repository");
 
 class InvoicePaymentRepository {
   async findByInvoiceId(invoiceId) {
-    const invoiceExistsQuery = `
-      SELECT invoice_id
+    const invoiceQuery = `
+      SELECT invoice_id, total_amount
       FROM invoice
       WHERE invoice_id = $1
     `;
-    const invoiceExistsResult = await pool.query(invoiceExistsQuery, [invoiceId]);
+    const invoiceResult = await pool.query(invoiceQuery, [invoiceId]);
 
-    if (!invoiceExistsResult.rows[0]) {
+    if (!invoiceResult.rows[0]) {
       throw new Error("Invoice not found");
     }
+
+    const totalAmount = Number(invoiceResult.rows[0].total_amount) || 0;
+
+    // Get advance payment from job
+    const advanceQuery = `
+      SELECT
+        j.advance_amount,
+        j.bank_account_id,
+        j.start_date,
+        ba.account_name,
+        ba.account_number
+      FROM invoice i
+      INNER JOIN job j ON i.job_id = j.job_id
+      LEFT JOIN bank_account ba ON j.bank_account_id = ba.bank_account_id
+      WHERE i.invoice_id = $1
+        AND j.advance_amount > 0
+    `;
 
     const paymentsQuery = `
       SELECT
@@ -40,14 +58,49 @@ class InvoicePaymentRepository {
       WHERE invoice_id = $1
     `;
 
-    const [paymentsResult, summaryResult] = await Promise.all([
+    const [advanceResult, paymentsResult, summaryResult] = await Promise.all([
+      pool.query(advanceQuery, [invoiceId]),
       pool.query(paymentsQuery, [invoiceId]),
       pool.query(summaryQuery, [invoiceId]),
     ]);
 
+    // Build payments array including advance if exists
+    const allPayments = [];
+    
+    // Add advance payment first if exists
+    if (advanceResult.rows.length > 0 && advanceResult.rows[0].advance_amount > 0) {
+      const advance = advanceResult.rows[0];
+      allPayments.push({
+        invoice_payment_id: null,
+        invoice_id: invoiceId,
+        bank_account_id: advance.bank_account_id,
+        amount_paid: advance.advance_amount,
+        remarks: 'Advance',
+        payment_date: advance.start_date,
+        status: 'completed',
+        created_at: advance.start_date,
+        updated_at: advance.start_date,
+        account_name: advance.account_name,
+        account_number: advance.account_number,
+      });
+    }
+
+    // Add regular payments
+    allPayments.push(...paymentsResult.rows);
+
+    // Calculate total including advance
+    const advanceAmount = advanceResult.rows.length > 0 ? Number(advanceResult.rows[0].advance_amount) || 0 : 0;
+    const totalPaid = Number(summaryResult.rows[0].total_paid) + advanceAmount;
+    const balanceAmount = totalAmount - totalPaid;
+
     return {
-      payments: paymentsResult.rows,
-      summary: summaryResult.rows[0],
+      payments: allPayments,
+      summary: {
+        payment_count: allPayments.length,
+        total_amount: totalAmount.toString(),
+        total_paid: totalPaid.toString(),
+        balance_amount: balanceAmount.toString(),
+      },
     };
   }
 
@@ -113,6 +166,23 @@ class InvoicePaymentRepository {
       ]);
 
       const payment = paymentResult.rows[0];
+
+      const incomeTypeId = await dailyTransactionRepository.getFinanceTypeIdByCode("INCOME", client);
+
+      await dailyTransactionRepository.create(
+        {
+          shop_id: null,
+          finance_types_id: incomeTypeId,
+          finance_categories_id: null,
+          reference_type: "invoice_payment",
+          reference_id: payment.invoice_payment_id,
+          bank_account_id: payment.bank_account_id,
+          amount: payment.amount_paid,
+          transaction_date: payment.payment_date,
+          description: payment.remarks || `Invoice payment - ${payment.invoice_id}`,
+        },
+        client
+      );
 
       // Update bank account balance and last transaction
       const bankAccountUpdateQuery = `

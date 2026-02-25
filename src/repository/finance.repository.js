@@ -1,4 +1,5 @@
 const pool = require("../config/database");
+const dailyTransactionRepository = require("./daily_transaction.repository");
 
 class FinanceRepository {
   // Get all finance records
@@ -39,58 +40,120 @@ class FinanceRepository {
 
   // Create new finance record
   async create(financeData) {
-    const query = `
-      INSERT INTO finance (
-        bank_account_id, 
-        finance_category_id, 
-        finance_type_id, 
-        amount, 
-        transaction_date,
-        description,
-        remarks
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7)
-      RETURNING *
-    `;
-    const values = [
-      financeData.bank_account_id,
-      financeData.finance_category_id,
-      financeData.finance_type_id,
-      financeData.amount,
-      financeData.transaction_date,
-      financeData.description || null,
-      financeData.remarks || null,
-    ];
-    const result = await pool.query(query, values);
-    return result.rows[0];
+    const client = await pool.connect();
+
+    try {
+      await client.query("BEGIN");
+
+      const query = `
+        INSERT INTO finance (
+          bank_account_id, 
+          finance_category_id, 
+          finance_type_id, 
+          amount, 
+          transaction_date,
+          description,
+          remarks
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+        RETURNING *
+      `;
+      const values = [
+        financeData.bank_account_id,
+        financeData.finance_category_id,
+        financeData.finance_type_id,
+        financeData.amount,
+        financeData.transaction_date,
+        financeData.description || null,
+        financeData.remarks || null,
+      ];
+      const result = await client.query(query, values);
+      const finance = result.rows[0];
+
+      await dailyTransactionRepository.create(
+        {
+          finance_types_id: finance.finance_type_id,
+          finance_categories_id: finance.finance_category_id,
+          reference_type: "finance",
+          reference_id: finance.finance_id,
+          bank_account_id: finance.bank_account_id,
+          amount: finance.amount,
+          transaction_date: finance.transaction_date,
+          description: finance.description || finance.remarks,
+        },
+        client
+      );
+
+      await client.query("COMMIT");
+      return finance;
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 
   // Update finance record
   async update(financeId, financeData) {
-    const query = `
-      UPDATE finance 
-      SET 
-        bank_account_id = $1,
-        finance_category_id = $2,
-        finance_type_id = $3,
-        amount = $4,
-        transaction_date = $5,
-        description = $6,
-        remarks = $7
-      WHERE finance_id = $8
-      RETURNING *
-    `;
-    const values = [
-      financeData.bank_account_id,
-      financeData.finance_category_id,
-      financeData.finance_type_id,
-      financeData.amount,
-      financeData.transaction_date,
-      financeData.description || null,
-      financeData.remarks || null,
-      financeId,
-    ];
-    const result = await pool.query(query, values);
-    return result.rows[0];
+    const client = await pool.connect();
+
+    try {
+      await client.query("BEGIN");
+
+      const query = `
+        UPDATE finance 
+        SET 
+          bank_account_id = $1,
+          finance_category_id = $2,
+          finance_type_id = $3,
+          amount = $4,
+          transaction_date = $5,
+          description = $6,
+          remarks = $7
+        WHERE finance_id = $8
+        RETURNING *
+      `;
+      const values = [
+        financeData.bank_account_id,
+        financeData.finance_category_id,
+        financeData.finance_type_id,
+        financeData.amount,
+        financeData.transaction_date,
+        financeData.description || null,
+        financeData.remarks || null,
+        financeId,
+      ];
+      const result = await client.query(query, values);
+      const finance = result.rows[0];
+
+      if (!finance) {
+        await client.query("ROLLBACK");
+        return null;
+      }
+
+      await dailyTransactionRepository.deleteByReference("finance", financeId, client);
+      await dailyTransactionRepository.create(
+        {
+          finance_types_id: finance.finance_type_id,
+          finance_categories_id: finance.finance_category_id,
+          reference_type: "finance",
+          reference_id: finance.finance_id,
+          bank_account_id: finance.bank_account_id,
+          amount: finance.amount,
+          transaction_date: finance.transaction_date,
+          description: finance.description || finance.remarks,
+        },
+        client
+      );
+
+      await client.query("COMMIT");
+      return finance;
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 
   // Delete finance record
@@ -119,6 +182,8 @@ class FinanceRepository {
       // Delete finance record
       const query = "DELETE FROM finance WHERE finance_id = $1 RETURNING *";
       const result = await client.query(query, [financeId]);
+
+      await dailyTransactionRepository.deleteByReference("finance", financeId, client);
 
       await client.query("COMMIT");
 

@@ -1,4 +1,5 @@
 const pool = require("../config/database");
+const dailyTransactionRepository = require("./daily_transaction.repository");
 
 class JobRepository {
   async findById(jobId) {
@@ -179,9 +180,30 @@ class JobRepository {
         jobId,
       ]);
 
+      const updatedJob = updateResult.rows[0];
+      await dailyTransactionRepository.deleteByReference("job", jobId, client);
+
+      if (updatedJob?.bank_account_id && Number(updatedJob.advance_amount) > 0) {
+        const incomeTypeId = await dailyTransactionRepository.getFinanceTypeIdByCode("INCOME", client);
+        await dailyTransactionRepository.create(
+          {
+            shop_id: null,
+            finance_types_id: incomeTypeId,
+            finance_categories_id: null,
+            reference_type: "job",
+            reference_id: updatedJob.job_id,
+            bank_account_id: updatedJob.bank_account_id,
+            amount: updatedJob.advance_amount,
+            transaction_date: updatedJob.start_date,
+            description: `Job advance - ${updatedJob.job_number}`,
+          },
+          client
+        );
+      }
+
       await client.query("COMMIT");
 
-      return updateResult.rows[0];
+      return updatedJob;
     } catch (error) {
       await client.query("ROLLBACK");
       throw error;
@@ -292,6 +314,8 @@ class JobRepository {
           [advanceAmount, job.bank_account_id]
         );
       }
+
+      await dailyTransactionRepository.deleteByReference("job", jobId, client);
 
       const deleteJobResult = await client.query(
         `
@@ -435,6 +459,22 @@ class JobRepository {
           WHERE bank_account_id = $3
           `,
           [jobData.advance_amount, jobData.start_date, jobData.bank_account_id]
+        );
+
+        const incomeTypeId = await dailyTransactionRepository.getFinanceTypeIdByCode("INCOME", client);
+        await dailyTransactionRepository.create(
+          {
+            shop_id: null,
+            finance_types_id: incomeTypeId,
+            finance_categories_id: null,
+            reference_type: "job",
+            reference_id: job.job_id,
+            bank_account_id: jobData.bank_account_id,
+            amount: jobData.advance_amount,
+            transaction_date: jobData.start_date,
+            description: `Job advance - ${job.job_number}`,
+          },
+          client
         );
       }
 

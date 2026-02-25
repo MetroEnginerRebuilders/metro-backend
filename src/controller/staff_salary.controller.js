@@ -1,6 +1,42 @@
 const staffSalaryRepository = require("../repository/staff_salary.repository");
 
 class StaffSalaryController {
+  // Get current month salary summary for a staff
+  async getMonthlySummary(req, res) {
+    try {
+      const { staffId } = req.params;
+
+      if (!staffId) {
+        return res.status(400).json({
+          success: false,
+          message: "Staff ID is required",
+        });
+      }
+
+      const staff = await staffSalaryRepository.getStaffById(staffId);
+      if (!staff) {
+        return res.status(404).json({
+          success: false,
+          message: "Staff not found",
+        });
+      }
+
+      const summary = await staffSalaryRepository.getMonthlySalarySummaryByStaffId(staffId);
+
+      res.json({
+        success: true,
+        message: "Monthly salary summary fetched successfully",
+        data: summary,
+      });
+    } catch (error) {
+      console.error("Get monthly salary summary error:", error);
+      res.status(500).json({
+        success: false,
+        message: "Internal server error",
+      });
+    }
+  }
+
   // Create new staff salary
   async create(req, res) {
     try {

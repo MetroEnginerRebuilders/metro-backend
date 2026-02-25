@@ -1,6 +1,67 @@
 const pool = require("../config/database");
+const dailyTransactionRepository = require("./daily_transaction.repository");
 
 class StaffSalaryRepository {
+  // Get current month salary summary by staff ID
+  async getMonthlySalarySummaryByStaffId(staffId) {
+    const query = `
+      SELECT
+        s.staff_id,
+        s.staff_name,
+        COALESCE(s.salary, 0) AS monthly_salary,
+        COALESCE(
+          SUM(
+            CASE
+              WHEN LOWER(st.salary_type) = 'advance' THEN ss.amount
+              ELSE 0
+            END
+          ),
+          0
+        ) AS advance_paid_this_month,
+        COALESCE(
+          SUM(
+            CASE
+              WHEN LOWER(st.salary_type) = 'salary' THEN ss.amount
+              ELSE 0
+            END
+          ),
+          0
+        ) AS salary_paid_this_month,
+        COALESCE(SUM(ss.amount), 0) AS total_paid_this_month
+      FROM staff s
+      LEFT JOIN staff_salary ss
+        ON s.staff_id = ss.staff_id
+        AND DATE_TRUNC('month', ss.effective_date) = DATE_TRUNC('month', CURRENT_DATE)
+      LEFT JOIN salary_type st ON ss.salary_type_id = st.salary_type_id
+      WHERE s.staff_id = $1
+      GROUP BY s.staff_id, s.staff_name, s.salary
+    `;
+
+    const result = await pool.query(query, [staffId]);
+    const summary = result.rows[0];
+
+    if (!summary) {
+      return null;
+    }
+
+    const monthlySalary = parseFloat(summary.monthly_salary) || 0;
+    const advancePaid = parseFloat(summary.advance_paid_this_month) || 0;
+    const salaryPaid = parseFloat(summary.salary_paid_this_month) || 0;
+    const totalPaid = parseFloat(summary.total_paid_this_month) || 0;
+    const balanceAmount = monthlySalary - totalPaid;
+
+    return {
+      staff_id: summary.staff_id,
+      staff_name: summary.staff_name,
+      month: new Date().toLocaleString("default", { month: "long", year: "numeric" }),
+      monthly_salary: monthlySalary,
+      advance_paid_this_month: advancePaid,
+      salary_paid_this_month: salaryPaid,
+      total_paid_this_month: totalPaid,
+      balance_amount: balanceAmount,
+    };
+  }
+
   // Create new staff salary
   async create(staffSalaryData) {
     const client = await pool.connect();
@@ -47,6 +108,22 @@ class StaffSalaryRepository {
         WHERE bank_account_id = $2
       `;
       await client.query(updateBankQuery, [staffSalaryData.amount, staffSalaryData.bankAccountId]);
+
+      const expenseTypeId = await dailyTransactionRepository.getFinanceTypeIdByCode("EXPENSE", client);
+      await dailyTransactionRepository.create(
+        {
+          shop_id: null,
+          finance_types_id: expenseTypeId,
+          finance_categories_id: null,
+          reference_type: "salary",
+          reference_id: result.rows[0].staff_salary_id,
+          bank_account_id: staffSalaryData.bankAccountId,
+          amount: staffSalaryData.amount,
+          transaction_date: staffSalaryData.effectiveDate,
+          description: staffSalaryData.remarks || "Staff salary payment",
+        },
+        client
+      );
 
       await client.query('COMMIT');
       return result.rows[0];
@@ -234,8 +311,29 @@ class StaffSalaryRepository {
         staffSalaryId
       ]);
 
+      await dailyTransactionRepository.deleteByReference("salary", staffSalaryId, client);
+
+      const updatedSalary = result.rows[0];
+      if (updatedSalary) {
+        const expenseTypeId = await dailyTransactionRepository.getFinanceTypeIdByCode("EXPENSE", client);
+        await dailyTransactionRepository.create(
+          {
+            shop_id: null,
+            finance_types_id: expenseTypeId,
+            finance_categories_id: null,
+            reference_type: "salary",
+            reference_id: updatedSalary.staff_salary_id,
+            bank_account_id: updatedSalary.bank_account_id,
+            amount: updatedSalary.amount,
+            transaction_date: updatedSalary.effective_date,
+            description: updatedSalary.remarks || "Staff salary payment",
+          },
+          client
+        );
+      }
+
       await client.query('COMMIT');
-      return result.rows[0];
+      return updatedSalary;
     } catch (error) {
       await client.query('ROLLBACK');
       throw error;
@@ -246,9 +344,24 @@ class StaffSalaryRepository {
 
   // Delete staff salary
   async delete(staffSalaryId) {
-    const query = "DELETE FROM staff_salary WHERE staff_salary_id = $1 RETURNING *";
-    const result = await pool.query(query, [staffSalaryId]);
-    return result.rows[0];
+    const client = await pool.connect();
+
+    try {
+      await client.query("BEGIN");
+
+      const query = "DELETE FROM staff_salary WHERE staff_salary_id = $1 RETURNING *";
+      const result = await client.query(query, [staffSalaryId]);
+
+      await dailyTransactionRepository.deleteByReference("salary", staffSalaryId, client);
+
+      await client.query("COMMIT");
+      return result.rows[0];
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 }
 

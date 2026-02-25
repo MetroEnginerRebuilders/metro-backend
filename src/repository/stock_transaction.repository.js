@@ -231,6 +231,9 @@ const stockTransactionRepository = {
         sti.quantity,
         sti.price,
         (sti.quantity * sti.price) as item_amount,
+        st.shop_id,
+        st.order_date,
+        st.description,
         st.bank_account_id,
         st.stock_type_id,
         stt.stock_type_code

@@ -1,5 +1,6 @@
 const stockTransactionRepository = require('../repository/stock_transaction.repository');
 const bankAccountRepository = require('../repository/bank_account.repository');
+const dailyTransactionRepository = require('../repository/daily_transaction.repository');
 
 const stockTransactionController = {
   // Create stock transaction
@@ -90,6 +91,22 @@ const stockTransactionController = {
         // Return: add to bank account (like income)
         await bankAccountRepository.addBalance(bankAccountId, finalTotalAmount, currentDate);
       }
+
+      const financeTypeCode = stockType.stock_type_code === 'PURCHASE' ? 'EXPENSE' : 'INCOME';
+      const financeTypeId = await dailyTransactionRepository.getFinanceTypeIdByCode(financeTypeCode);
+
+      await dailyTransactionRepository.deleteByReference('stock', stockTransaction.stock_transaction_id);
+      await dailyTransactionRepository.create({
+        shop_id: stockTransaction.shop_id,
+        finance_types_id: financeTypeId,
+        finance_categories_id: null,
+        reference_type: 'stock',
+        reference_id: stockTransaction.stock_transaction_id,
+        bank_account_id: stockTransaction.bank_account_id,
+        amount: stockTransaction.total_amount,
+        transaction_date: stockTransaction.order_date,
+        description: stockTransaction.description || null
+      });
 
       res.status(201).json({
         success: true,
@@ -184,11 +201,28 @@ const stockTransactionController = {
       if (itemCount === 1) {
         // Only one item exists - delete entire transaction
         await stockTransactionRepository.deleteTransaction(itemDetails.stock_transaction_id);
+        await dailyTransactionRepository.deleteByReference('stock', itemDetails.stock_transaction_id);
       } else {
         // Multiple items exist - delete only this item
         await stockTransactionRepository.deleteItem(itemId);
         // Update transaction total amount
-        await stockTransactionRepository.updateTransactionTotal(itemDetails.stock_transaction_id);
+        const updatedTotal = await stockTransactionRepository.updateTransactionTotal(itemDetails.stock_transaction_id);
+
+        const financeTypeCodeForLedger = itemDetails.stock_type_code === 'PURCHASE' ? 'EXPENSE' : 'INCOME';
+        const financeTypeIdForLedger = await dailyTransactionRepository.getFinanceTypeIdByCode(financeTypeCodeForLedger);
+
+        await dailyTransactionRepository.deleteByReference('stock', itemDetails.stock_transaction_id);
+        await dailyTransactionRepository.create({
+          shop_id: itemDetails.shop_id,
+          finance_types_id: financeTypeIdForLedger,
+          finance_categories_id: null,
+          reference_type: 'stock',
+          reference_id: itemDetails.stock_transaction_id,
+          bank_account_id: itemDetails.bank_account_id,
+          amount: updatedTotal.total_amount,
+          transaction_date: itemDetails.order_date,
+          description: itemDetails.description || null
+        });
       }
 
       // Reverse bank account balance

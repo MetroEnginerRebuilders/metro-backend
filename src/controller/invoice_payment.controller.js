@@ -18,7 +18,9 @@ class InvoicePaymentController {
           invoice_id: invoiceId,
           summary: {
             payment_count: Number(result.summary?.payment_count || 0),
+            total_amount: Number(result.summary?.total_amount || 0),
             total_paid: Number(result.summary?.total_paid || 0),
+            balance_amount: Number(result.summary?.balance_amount || 0),
           },
           payments: result.payments,
         },

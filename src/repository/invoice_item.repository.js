@@ -1,4 +1,5 @@
 const pool = require("../config/database");
+const dailyTransactionRepository = require("./daily_transaction.repository");
 
 class InvoiceItemRepository {
   async addItems(invoiceId, items, options = {}) {
@@ -121,6 +122,21 @@ class InvoiceItemRepository {
           ]);
 
           const financeRecord = financeResult.rows[0];
+
+          await dailyTransactionRepository.create(
+            {
+              shop_id: null,
+              finance_types_id: financeRecord.finance_type_id,
+              finance_categories_id: financeRecord.finance_category_id,
+              reference_type: "finance",
+              reference_id: financeRecord.finance_id,
+              bank_account_id: financeRecord.bank_account_id,
+              amount: financeRecord.amount,
+              transaction_date: financeRecord.transaction_date,
+              description: financeRecord.description || financeRecord.remarks,
+            },
+            client
+          );
 
           // Update invoice_items with finance_id
           await client.query(
@@ -342,6 +358,12 @@ class InvoiceItemRepository {
           await client.query(
             "DELETE FROM finance WHERE finance_id = $1",
             [deletedItem.finance_id]
+          );
+
+          await dailyTransactionRepository.deleteByReference(
+            "finance",
+            deletedItem.finance_id,
+            client
           );
 
           // Restore bank account balance (add back the commission amount)

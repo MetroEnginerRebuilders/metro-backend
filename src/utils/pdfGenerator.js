@@ -137,9 +137,26 @@ class PDFGenerator {
         return;
       }
 
-      const description = item.item_type_code === "SPARE" 
-        ? `${item.spare_name || item.item_type_name}` 
-        : item.item_type_name || "N/A";
+      let description = "";
+      if (item.item_type_code === "SPARE") {
+        const companyName = item.company_name || "";
+        const modelName = item.model_name || "";
+        const spareName = item.spare_name || item.item_type_name || "";
+        
+        // Build description with company, model, and spare name
+        const parts = [];
+        if (companyName) parts.push(companyName);
+        if (modelName) parts.push(modelName);
+        if (spareName) parts.push(spareName);
+        
+        description = parts.length > 0 ? parts.join(" - ") : "N/A";
+      } else if (item.item_type_code === "WORK") {
+        // For work items, show "Work - Type of work"
+        const workType = item.remarks || "";
+        description = workType ? `Work - ${workType}` : (item.item_type_name || "N/A");
+      } else {
+        description = item.item_type_name || "N/A";
+      }
       
       const qty = item.quantity || 0;
       const unitPrice = this.formatCurrency(item.unit_price || 0);
