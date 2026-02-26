@@ -1,4 +1,5 @@
 const financeRepository = require("../repository/finance.repository");
+const dailyTransactionRepository = require("../repository/daily_transaction.repository");
 
 class FinanceController {
   // Get all income finance records (finance_type_code = 'INCOME')
@@ -360,6 +361,89 @@ class FinanceController {
         success: false,
         message: "Internal server error",
         error: error.message,
+      });
+    }
+  }
+
+  async getDashboardIncomeExpense(req, res) {
+    try {
+      const fromDate = req.body?.fromDate || req.query?.fromDate;
+      const toDate = req.body?.toDate || req.query?.toDate;
+
+      if (!fromDate || !toDate) {
+        return res.status(400).json({
+          success: false,
+          message: "fromDate and toDate are required",
+        });
+      }
+
+      const start = new Date(fromDate);
+      const end = new Date(toDate);
+
+      if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid fromDate or toDate",
+        });
+      }
+
+      if (start > end) {
+        return res.status(400).json({
+          success: false,
+          message: "fromDate must be less than or equal to toDate",
+        });
+      }
+
+      const data = await dailyTransactionRepository.getIncomeExpenseTotalsByDateRange(
+        fromDate,
+        toDate
+      );
+
+      res.json({
+        success: true,
+        message: "Dashboard income and expense summary fetched successfully",
+        data,
+      });
+    } catch (error) {
+      console.error("Get dashboard income/expense error:", error);
+      res.status(500).json({
+        success: false,
+        message: "Internal server error",
+      });
+    }
+  }
+
+  async getYearlyIncomeExpense(req, res) {
+    try {
+      const year = req.body?.year || req.query?.year;
+
+      if (!year) {
+        return res.status(400).json({
+          success: false,
+          message: "year is required",
+        });
+      }
+
+      const yearNum = parseInt(year, 10);
+      if (Number.isNaN(yearNum) || yearNum < 2000 || yearNum > 2100) {
+        return res.status(400).json({
+          success: false,
+          message: "year must be a valid number between 2000 and 2100",
+        });
+      }
+
+      const data = await dailyTransactionRepository.getMonthlyIncomeExpenseByYear(yearNum);
+
+      res.json({
+        success: true,
+        message: "Yearly monthly income and expense fetched successfully",
+        data,
+      });
+    } catch (error) {
+      console.error("Get yearly income/expense error:", error);
+      res.status(500).json({
+        success: false,
+        message: "Internal server error",
       });
     }
   }

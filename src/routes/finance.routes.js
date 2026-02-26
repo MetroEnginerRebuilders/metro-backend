@@ -5,6 +5,10 @@ const { verifyToken } = require("../middleware/auth.middleware");
 
 // Finance routes (all protected with authentication)
 router.get("/finance", verifyToken, financeController.list);
+router.get("/finance/dashboard/income-expense", verifyToken, financeController.getDashboardIncomeExpense);
+router.post("/finance/dashboard/income-expense", verifyToken, financeController.getDashboardIncomeExpense);
+router.get("/finance/dashboard/income-expense/yearly", verifyToken, financeController.getYearlyIncomeExpense);
+router.post("/finance/dashboard/income-expense/yearly", verifyToken, financeController.getYearlyIncomeExpense);
 router.get("/finance/date-range", verifyToken, financeController.getByDateRange);
 router.get("/finance/bank-account/:bankAccountId", verifyToken, financeController.getByBankAccount);
 router.post("/finance/report/monthly", verifyToken, financeController.getMonthlyReport);
