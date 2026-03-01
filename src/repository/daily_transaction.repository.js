@@ -128,6 +128,155 @@ class DailyTransactionRepository {
       monthly_data: monthlyData,
     };
   }
+
+  async getTransactionsByDateRangeByFinanceType(fromDate, toDate, financeTypeCode) {
+    const financeTypeId = await this.getFinanceTypeIdByCode(financeTypeCode);
+
+    if (!financeTypeId) {
+      return [];
+    }
+
+    const query = `
+      SELECT
+        dt.transaction_id,
+        dt.shop_id,
+        dt.finance_types_id,
+        dt.finance_categories_id,
+        CASE
+          WHEN LOWER(COALESCE(dt.reference_type, '')) = 'finance' THEN COALESCE(fc_fin.finance_category_name, fc.finance_category_name)
+          ELSE dt.reference_type
+        END AS reference_type,
+        dt.reference_id,
+        dt.bank_account_id,
+        dt.amount,
+        dt.transaction_date,
+        dt.description,
+        dt.created_at,
+        ft.finance_type_code,
+        ft.finance_type_name,
+        fc.finance_category_name,
+        ba.account_name,
+        CASE
+          WHEN LOWER(COALESCE(dt.reference_type, '')) = 'customer' THEN
+            CASE
+              WHEN c.customer_address1 IS NOT NULL AND c.customer_address1 <> ''
+                THEN c.customer_name || ' - ' || c.customer_address1
+              ELSE c.customer_name
+            END
+          WHEN LOWER(COALESCE(dt.reference_type, '')) = 'finance' THEN
+            CASE
+              WHEN LOWER(COALESCE(fc_fin.finance_category_name, fc.finance_category_name, '')) = 'commission'
+               AND ft.finance_type_code = 'EXPENSE'
+               AND dt.description IS NOT NULL
+               AND dt.description <> ''
+                THEN dt.description
+              ELSE NULL
+            END
+          WHEN LOWER(COALESCE(dt.reference_type, '')) = 'invoice_payment' THEN COALESCE(
+            CASE
+              WHEN c_ip.customer_name IS NOT NULL AND c_ip.customer_address1 IS NOT NULL AND c_ip.customer_address1 <> ''
+                THEN c_ip.customer_name || ' - ' || c_ip.customer_address1
+              ELSE c_ip.customer_name
+            END,
+            inv.invoice_number
+          )
+          WHEN LOWER(COALESCE(dt.reference_type, '')) = 'job' THEN COALESCE(
+            CASE
+              WHEN c_job.customer_name IS NOT NULL AND c_job.customer_address1 IS NOT NULL AND c_job.customer_address1 <> ''
+                THEN c_job.customer_name || ' - ' || c_job.customer_address1
+              ELSE c_job.customer_name
+            END,
+            j.job_number
+          )
+          WHEN LOWER(COALESCE(dt.reference_type, '')) = 'shop' THEN
+            CASE
+              WHEN sh_ref.shop_address IS NOT NULL AND sh_ref.shop_address <> ''
+                THEN sh_ref.shop_name || ' - ' || sh_ref.shop_address
+              ELSE sh_ref.shop_name
+            END
+          WHEN LOWER(COALESCE(dt.reference_type, '')) = 'salary' THEN s.staff_name
+          WHEN LOWER(COALESCE(dt.reference_type, '')) = 'stock' THEN COALESCE(sh_dt.shop_name, sh_stock.shop_name, st.stock_type_name)
+          ELSE NULL
+        END AS reference_name
+      FROM daily_transaction dt
+      LEFT JOIN finance_types ft
+        ON dt.finance_types_id = ft.finance_type_id
+      LEFT JOIN finance_categories fc
+        ON dt.finance_categories_id = fc.finance_category_id
+      LEFT JOIN bank_account ba
+        ON dt.bank_account_id = ba.bank_account_id
+      LEFT JOIN shop sh_dt
+        ON dt.shop_id = sh_dt.shop_id
+      LEFT JOIN customer c
+        ON LOWER(COALESCE(dt.reference_type, '')) = 'customer'
+       AND dt.reference_id = c.customer_id
+      LEFT JOIN shop sh_ref
+        ON LOWER(COALESCE(dt.reference_type, '')) = 'shop'
+       AND dt.reference_id = sh_ref.shop_id
+      LEFT JOIN finance f
+        ON LOWER(COALESCE(dt.reference_type, '')) = 'finance'
+       AND dt.reference_id = f.finance_id
+      LEFT JOIN finance_categories fc_fin
+        ON f.finance_category_id = fc_fin.finance_category_id
+      LEFT JOIN invoice_items ii_fin
+        ON f.finance_id = ii_fin.finance_id
+      LEFT JOIN invoice inv_fin
+        ON ii_fin.invoice_id = inv_fin.invoice_id
+      LEFT JOIN customer c_fin
+        ON inv_fin.customer_id = c_fin.customer_id
+      LEFT JOIN invoice_payment ip
+        ON LOWER(COALESCE(dt.reference_type, '')) = 'invoice_payment'
+       AND dt.reference_id = ip.invoice_payment_id
+      LEFT JOIN invoice inv
+        ON ip.invoice_id = inv.invoice_id
+      LEFT JOIN customer c_ip
+        ON inv.customer_id = c_ip.customer_id
+      LEFT JOIN job j
+        ON LOWER(COALESCE(dt.reference_type, '')) = 'job'
+       AND dt.reference_id = j.job_id
+      LEFT JOIN customer c_job
+        ON j.customer_id = c_job.customer_id
+      LEFT JOIN staff_salary ss
+        ON LOWER(COALESCE(dt.reference_type, '')) = 'salary'
+       AND dt.reference_id = ss.staff_salary_id
+      LEFT JOIN staff s
+        ON ss.staff_id = s.staff_id
+      LEFT JOIN stock_transaction stx
+        ON LOWER(COALESCE(dt.reference_type, '')) = 'stock'
+       AND dt.reference_id = stx.stock_transaction_id
+      LEFT JOIN shop sh_stock
+        ON stx.shop_id = sh_stock.shop_id
+      LEFT JOIN stock_types st
+        ON stx.stock_type_id = st.stock_type_id
+      WHERE dt.transaction_date BETWEEN $1::date AND $2::date
+        AND dt.finance_types_id = $3
+      ORDER BY dt.transaction_date DESC, dt.created_at DESC
+    `;
+
+    const result = await pool.query(query, [fromDate, toDate, financeTypeId]);
+
+    return result.rows.map((row) => {
+      const isFinanceCategoryReference =
+        row.reference_type &&
+        row.finance_category_name &&
+        String(row.reference_type).toLowerCase() ===
+          String(row.finance_category_name).toLowerCase();
+
+      return {
+        ...row,
+        amount: Number(row.amount) || 0,
+        reference_name: isFinanceCategoryReference ? null : row.reference_name || null,
+      };
+    });
+  }
+
+  async getIncomeTransactionsByDateRange(fromDate, toDate) {
+    return this.getTransactionsByDateRangeByFinanceType(fromDate, toDate, "INCOME");
+  }
+
+  async getExpenseTransactionsByDateRange(fromDate, toDate) {
+    return this.getTransactionsByDateRangeByFinanceType(fromDate, toDate, "EXPENSE");
+  }
 }
 
 module.exports = new DailyTransactionRepository();

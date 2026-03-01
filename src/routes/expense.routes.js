@@ -6,6 +6,7 @@ const { verifyToken } = require("../middleware/auth.middleware");
 // Expense routes (all protected with authentication)
 router.get("/expense", verifyToken, expenseController.listExpense);
 router.get("/expense/date-range", verifyToken, expenseController.getExpenseByDateRange);
+router.post("/expense/date-range", verifyToken, expenseController.getExpenseByDateRange);
 router.get("/expense/:id", verifyToken, expenseController.getExpenseById);
 router.post("/expense", verifyToken, expenseController.createExpense);
 router.put("/expense/:id", verifyToken, expenseController.updateExpense);

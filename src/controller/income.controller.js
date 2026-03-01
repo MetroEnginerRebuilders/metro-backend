@@ -1,5 +1,6 @@
 const financeRepository = require("../repository/finance.repository");
 const bankAccountRepository = require("../repository/bank_account.repository");
+const dailyTransactionRepository = require("../repository/daily_transaction.repository");
 
 class IncomeController {
   // Create new income record
@@ -344,21 +345,43 @@ class IncomeController {
   // Get income records by date range
   async getIncomeByDateRange(req, res) {
     try {
-      const { startDate, endDate } = req.query;
+      const fromDate =
+        req.body?.fromDate || req.query?.fromDate || req.body?.startDate || req.query?.startDate;
+      const toDate =
+        req.body?.toDate || req.query?.toDate || req.body?.endDate || req.query?.endDate;
 
-      if (!startDate || !endDate) {
+      if (!fromDate || !toDate) {
         return res.status(400).json({
           success: false,
-          message: "Start date and end date are required",
+          message: "fromDate and toDate are required",
         });
       }
 
-      const incomeTypeId = await financeRepository.getIncomeTypeId();
-      const allFinance = await financeRepository.findByDateRange(startDate, endDate);
-      const incomeRecords = allFinance.filter(record => record.finance_type_id === incomeTypeId);
+      const start = new Date(fromDate);
+      const end = new Date(toDate);
+
+      if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid fromDate or toDate",
+        });
+      }
+
+      if (start > end) {
+        return res.status(400).json({
+          success: false,
+          message: "fromDate must be less than or equal to toDate",
+        });
+      }
+
+      const incomeRecords = await dailyTransactionRepository.getIncomeTransactionsByDateRange(
+        fromDate,
+        toDate
+      );
 
       res.json({
         success: true,
+        message: "Income transactions fetched successfully",
         data: incomeRecords,
       });
     } catch (error) {

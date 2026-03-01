@@ -1,5 +1,6 @@
 const financeRepository = require("../repository/finance.repository");
 const bankAccountRepository = require("../repository/bank_account.repository");
+const dailyTransactionRepository = require("../repository/daily_transaction.repository");
 
 class ExpenseController {
   // Create new expense record
@@ -345,21 +346,43 @@ class ExpenseController {
   // Get expense records by date range
   async getExpenseByDateRange(req, res) {
     try {
-      const { startDate, endDate } = req.query;
+      const fromDate =
+        req.body?.fromDate || req.query?.fromDate || req.body?.startDate || req.query?.startDate;
+      const toDate =
+        req.body?.toDate || req.query?.toDate || req.body?.endDate || req.query?.endDate;
 
-      if (!startDate || !endDate) {
+      if (!fromDate || !toDate) {
         return res.status(400).json({
           success: false,
-          message: "Start date and end date are required",
+          message: "fromDate and toDate are required",
         });
       }
 
-      const expenseTypeId = await financeRepository.getExpenseTypeId();
-      const allFinance = await financeRepository.findByDateRange(startDate, endDate);
-      const expenseRecords = allFinance.filter(record => record.finance_type_id === expenseTypeId);
+      const start = new Date(fromDate);
+      const end = new Date(toDate);
+
+      if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid fromDate or toDate",
+        });
+      }
+
+      if (start > end) {
+        return res.status(400).json({
+          success: false,
+          message: "fromDate must be less than or equal to toDate",
+        });
+      }
+
+      const expenseRecords = await dailyTransactionRepository.getExpenseTransactionsByDateRange(
+        fromDate,
+        toDate
+      );
 
       res.json({
         success: true,
+        message: "Expense transactions fetched successfully",
         data: expenseRecords,
       });
     } catch (error) {
