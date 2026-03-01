@@ -26,6 +26,7 @@ const stockTransactionTypesRoutes = require("./routes/stock_transaction_types.ro
 const jobRoutes = require("./routes/job.routes");
 const invoiceRoutes = require("./routes/invoice.routes");
 const itemTypeRoutes = require("./routes/item_type.routes");
+const dailyTransactionRoutes = require("./routes/daily_transaction.routes");
 
 const app = express();
 
@@ -56,6 +57,7 @@ app.use("/", stockTransactionTypesRoutes);
 app.use("/", jobRoutes);
 app.use("/", invoiceRoutes);
 app.use("/", itemTypeRoutes);
+app.use("/", dailyTransactionRoutes);
 
 app.get("/", async (req, res) => {
   const result = await pool.query("SELECT current_database()");

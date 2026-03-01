@@ -277,6 +277,102 @@ class DailyTransactionRepository {
   async getExpenseTransactionsByDateRange(fromDate, toDate) {
     return this.getTransactionsByDateRangeByFinanceType(fromDate, toDate, "EXPENSE");
   }
+
+  async getTransactionsByDate(date) {
+    const query = `
+      SELECT
+        dt.transaction_id,
+        dt.shop_id,
+        dt.finance_types_id,
+        dt.finance_categories_id,
+        dt.reference_type,
+        dt.reference_id,
+        dt.bank_account_id,
+        dt.amount,
+        dt.transaction_date,
+        dt.description,
+        dt.created_at,
+        ft.finance_type_code,
+        ft.finance_type_name,
+        fc.finance_category_name,
+        ba.account_name,
+        sh_dt.shop_name AS daily_shop_name,
+        sh_stock.shop_name AS stock_shop_name,
+        s.staff_name,
+        j.job_number,
+        inv.invoice_number,
+        CASE
+          WHEN LOWER(COALESCE(dt.reference_type, '')) = 'stock' THEN
+            'stock-' || COALESCE(sh_dt.shop_name, sh_stock.shop_name, 'unknown')
+          WHEN LOWER(COALESCE(dt.reference_type, '')) = 'salary' THEN
+            'salary-' || COALESCE(s.staff_name, 'unknown')
+          WHEN LOWER(COALESCE(dt.reference_type, '')) = 'job' THEN
+            'job-' || COALESCE(j.job_number, 'unknown')
+          WHEN LOWER(COALESCE(dt.reference_type, '')) IN ('invoice', 'invoice_payment') THEN
+            'invoice-' || COALESCE(inv.invoice_number, 'unknown')
+          WHEN LOWER(COALESCE(dt.reference_type, '')) = 'finance'
+           AND ft.finance_type_code = 'INCOME' THEN
+            'income-' || COALESCE(fc_fin.finance_category_name, fc.finance_category_name, 'unknown')
+          WHEN LOWER(COALESCE(dt.reference_type, '')) = 'finance'
+           AND ft.finance_type_code = 'EXPENSE'
+           AND LOWER(COALESCE(fc_fin.finance_category_name, fc.finance_category_name, '')) = 'commission'
+           AND dt.description IS NOT NULL
+           AND dt.description <> '' THEN
+            dt.description
+          WHEN LOWER(COALESCE(dt.reference_type, '')) = 'finance'
+           AND ft.finance_type_code = 'EXPENSE' THEN
+            'expense-' || COALESCE(fc_fin.finance_category_name, fc.finance_category_name, 'unknown')
+          ELSE LOWER(COALESCE(dt.reference_type, 'unknown'))
+        END AS common_key
+      FROM daily_transaction dt
+      LEFT JOIN finance_types ft
+        ON dt.finance_types_id = ft.finance_type_id
+      LEFT JOIN finance_categories fc
+        ON dt.finance_categories_id = fc.finance_category_id
+      LEFT JOIN bank_account ba
+        ON dt.bank_account_id = ba.bank_account_id
+      LEFT JOIN shop sh_dt
+        ON dt.shop_id = sh_dt.shop_id
+      LEFT JOIN finance f
+        ON LOWER(COALESCE(dt.reference_type, '')) = 'finance'
+       AND dt.reference_id = f.finance_id
+      LEFT JOIN finance_categories fc_fin
+        ON f.finance_category_id = fc_fin.finance_category_id
+      LEFT JOIN stock_transaction stx
+        ON LOWER(COALESCE(dt.reference_type, '')) = 'stock'
+       AND dt.reference_id = stx.stock_transaction_id
+      LEFT JOIN shop sh_stock
+        ON stx.shop_id = sh_stock.shop_id
+      LEFT JOIN staff_salary ss
+        ON LOWER(COALESCE(dt.reference_type, '')) = 'salary'
+       AND dt.reference_id = ss.staff_salary_id
+      LEFT JOIN staff s
+        ON ss.staff_id = s.staff_id
+      LEFT JOIN job j
+        ON LOWER(COALESCE(dt.reference_type, '')) = 'job'
+       AND dt.reference_id = j.job_id
+      LEFT JOIN invoice_payment ip
+        ON LOWER(COALESCE(dt.reference_type, '')) = 'invoice_payment'
+       AND dt.reference_id = ip.invoice_payment_id
+      LEFT JOIN invoice inv
+        ON (
+          (LOWER(COALESCE(dt.reference_type, '')) = 'invoice' AND dt.reference_id = inv.invoice_id)
+          OR (LOWER(COALESCE(dt.reference_type, '')) = 'invoice_payment' AND ip.invoice_id = inv.invoice_id)
+        )
+      WHERE dt.transaction_date = $1::date
+      ORDER BY dt.created_at DESC
+    `;
+
+    const result = await pool.query(query, [date]);
+
+    return result.rows.map((row) => ({
+      transaction_id: row.transaction_id,
+      reference_id: row.reference_id,
+      transaction_date: row.transaction_date,
+      amount: Number(row.amount) || 0,
+      description: row.common_key,
+    }));
+  }
 }
 
 module.exports = new DailyTransactionRepository();
