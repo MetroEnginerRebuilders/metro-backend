@@ -52,6 +52,20 @@ class BankAccountRepository {
     };
   }
 
+  // Get active bank accounts
+  async findActive() {
+    const query = `
+      SELECT *
+      FROM bank_account
+      WHERE activate_date <= CURRENT_DATE
+        AND (inactivate_date IS NULL OR inactivate_date > CURRENT_DATE)
+      ORDER BY account_name ASC
+    `;
+
+    const result = await pool.query(query);
+    return result.rows;
+  }
+
   // Get bank account by ID
   async findById(bankAccountId) {
     const query = "SELECT * FROM bank_account WHERE bank_account_id = $1";

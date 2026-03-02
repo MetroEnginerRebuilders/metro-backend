@@ -104,6 +104,24 @@ class BankAccountController {
     }
   }
 
+  // Get active bank accounts
+  async listActive(req, res) {
+    try {
+      const data = await bankAccountRepository.findActive();
+
+      res.json({
+        success: true,
+        data,
+      });
+    } catch (error) {
+      console.error("List active bank accounts error:", error);
+      res.status(500).json({
+        success: false,
+        message: "Internal server error",
+      });
+    }
+  }
+
   // Update bank account
   async update(req, res) {
     try {
