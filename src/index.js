@@ -27,6 +27,7 @@ const jobRoutes = require("./routes/job.routes");
 const invoiceRoutes = require("./routes/invoice.routes");
 const itemTypeRoutes = require("./routes/item_type.routes");
 const dailyTransactionRoutes = require("./routes/daily_transaction.routes");
+const statementRoutes = require("./routes/statement.routes");
 
 const app = express();
 
@@ -58,6 +59,7 @@ app.use("/", jobRoutes);
 app.use("/", invoiceRoutes);
 app.use("/", itemTypeRoutes);
 app.use("/", dailyTransactionRoutes);
+app.use("/", statementRoutes);
 
 app.get("/", async (req, res) => {
   const result = await pool.query("SELECT current_database()");
