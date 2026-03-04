@@ -14,15 +14,6 @@ class CompanyController {
         });
       }
 
-      // Check if company name already exists
-      const existingCompany = await companyRepository.findByName(companyName.trim());
-      if (existingCompany) {
-        return res.status(409).json({
-          success: false,
-          message: "Company name already exists",
-        });
-      }
-
       // Create company
       const company = await companyRepository.create({
         companyName: companyName.trim(),
@@ -102,15 +93,6 @@ class CompanyController {
         return res.status(404).json({
           success: false,
           message: "Company not found",
-        });
-      }
-
-      // Check if new company name already exists (excluding current company)
-      const duplicateCompany = await companyRepository.findByName(companyName.trim());
-      if (duplicateCompany && duplicateCompany.company_id !== companyId) {
-        return res.status(409).json({
-          success: false,
-          message: "Company name already exists",
         });
       }
 

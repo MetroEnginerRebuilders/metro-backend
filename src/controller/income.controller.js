@@ -77,14 +77,20 @@ class IncomeController {
 
   // Get all income records with pagination
   async listIncome(req, res) {
-    console.log("Received request to list income records",req,res);
     try {
       const page = parseInt(req.query.page) || 1;
       const limit = parseInt(req.query.limit) || 10;
       const search = req.query.search || '';
+      const financeCategoryName = req.query.financeCategoryName || '';
       const financeTypeCode = req.query.financeTypeCode || 'INCOME';
 
-      console.log("Listing income records with params:", { page, limit, search, financeTypeCode });
+      console.log("Listing income records with params:", {
+        page,
+        limit,
+        search,
+        financeCategoryName,
+        financeTypeCode
+      });
 
       // Validate financeTypeCode
       if (financeTypeCode !== 'INCOME') {
@@ -107,6 +113,15 @@ class IncomeController {
       // Get all finance records and filter for income
       const allFinance = await financeRepository.findAll();
       let incomeRecords = allFinance.filter(record => record.finance_type_id === incomeTypeId);
+
+      // Apply finance category name filter if provided
+      if (financeCategoryName && financeCategoryName.trim() !== '') {
+        const categoryFilter = financeCategoryName.toLowerCase().trim();
+        incomeRecords = incomeRecords.filter(record => {
+          const categoryName = record.finance_category_name || '';
+          return categoryName.toLowerCase().trim() === categoryFilter;
+        });
+      }
 
       // Apply search filter if search parameter exists
       if (search && search.trim() !== '') {

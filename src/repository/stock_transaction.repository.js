@@ -317,15 +317,35 @@ const stockTransactionRepository = {
   // Get distinct companies from stock transactions
   getCompanies: async () => {
     const query = `
-      SELECT DISTINCT
+      SELECT
         c.company_id,
-        c.company_name
+        c.company_name,
+        SUM(
+          CASE
+            WHEN stt.stock_type_code = 'PURCHASE' THEN sti.quantity
+            WHEN stt.stock_type_code = 'RETURN' THEN -sti.quantity
+            ELSE 0
+          END
+        ) AS current_quantity
       FROM stock_transaction_items sti
+      JOIN stock_transaction st ON sti.stock_transaction_id = st.stock_transaction_id
+      JOIN stock_types stt ON st.stock_type_id = stt.stock_type_id
       JOIN company c ON sti.company_id = c.company_id
+      GROUP BY c.company_id, c.company_name
+      HAVING SUM(
+        CASE
+          WHEN stt.stock_type_code = 'PURCHASE' THEN sti.quantity
+          WHEN stt.stock_type_code = 'RETURN' THEN -sti.quantity
+          ELSE 0
+        END
+      ) > 0
       ORDER BY c.company_name
     `;
     const result = await pool.query(query);
-    return result.rows;
+    return result.rows.map((row) => ({
+      ...row,
+      current_quantity: Number(row.current_quantity) || 0,
+    }));
   },
 
   // Get available stock quantity for specific company, model, and spare
@@ -351,6 +371,59 @@ const stockTransactionRepository = {
     `;
     const result = await pool.query(query, [companyId, modelId, spareId]);
     return parseInt(result.rows[0].available_quantity) || 0;
+  },
+
+  // Get available stock and latest bought price for a specific item
+  getStockAvailabilityDetails: async (companyId, modelId, spareId) => {
+    const query = `
+      WITH stock_balance AS (
+        SELECT
+          COALESCE(
+            SUM(
+              CASE
+                WHEN stt.stock_type_code = 'PURCHASE' THEN sti.quantity
+                WHEN stt.stock_type_code = 'RETURN' THEN -sti.quantity
+                ELSE 0
+              END
+            ),
+            0
+          ) AS available_quantity
+        FROM stock_transaction_items sti
+        JOIN stock_transaction st ON sti.stock_transaction_id = st.stock_transaction_id
+        JOIN stock_types stt ON st.stock_type_id = stt.stock_type_id
+        WHERE sti.company_id = $1
+          AND sti.model_id = $2
+          AND sti.spare_id = $3
+      ),
+      latest_purchase AS (
+        SELECT
+          sti.price AS bought_price
+        FROM stock_transaction_items sti
+        JOIN stock_transaction st ON sti.stock_transaction_id = st.stock_transaction_id
+        JOIN stock_types stt ON st.stock_type_id = stt.stock_type_id
+        WHERE sti.company_id = $1
+          AND sti.model_id = $2
+          AND sti.spare_id = $3
+          AND stt.stock_type_code = 'PURCHASE'
+        ORDER BY st.order_date DESC, st.created_at DESC, sti.stock_transaction_item_id DESC
+        LIMIT 1
+      )
+      SELECT
+        sb.available_quantity,
+        lp.bought_price
+      FROM stock_balance sb
+      LEFT JOIN latest_purchase lp ON true
+    `;
+
+    const result = await pool.query(query, [companyId, modelId, spareId]);
+    const row = result.rows[0] || {};
+
+    return {
+      availableQuantity: Number(row.available_quantity) || 0,
+      boughtPrice: row.bought_price !== null && row.bought_price !== undefined
+        ? Number(row.bought_price)
+        : null,
+    };
   },
 
   // Get stock list by type with pagination and search

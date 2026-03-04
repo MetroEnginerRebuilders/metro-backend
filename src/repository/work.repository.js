@@ -46,6 +46,13 @@ class WorkRepository {
     return result.rows[0];
   }
 
+  // Check if work name already exists
+  async findByName(workName) {
+    const query = "SELECT * FROM work WHERE LOWER(work_name) = LOWER($1) LIMIT 1";
+    const result = await pool.query(query, [workName]);
+    return result.rows[0];
+  }
+
   // Update work
   async update(workId, workName) {
     const query = "UPDATE work SET work_name = $1, updated_at = NOW() WHERE work_id = $2 RETURNING *";

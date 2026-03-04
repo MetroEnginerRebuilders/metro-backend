@@ -46,6 +46,13 @@ class SpareRepository {
     return result.rows[0];
   }
 
+  // Check if spare name already exists
+  async findByName(spareName) {
+    const query = "SELECT * FROM spare WHERE LOWER(spare_name) = LOWER($1) LIMIT 1";
+    const result = await pool.query(query, [spareName]);
+    return result.rows[0];
+  }
+
   // Update spare
   async update(spareId, spareName) {
     const query = "UPDATE spare SET spare_name = $1, updated_at = NOW() WHERE spare_id = $2 RETURNING *";

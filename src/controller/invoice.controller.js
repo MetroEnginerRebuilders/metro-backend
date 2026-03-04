@@ -146,6 +146,7 @@ class InvoiceController {
             item_type_name: item.item_type_name,
             item_type_code: item.item_type_code,
             work_id: item.work_id,
+            work_name: item.work_id ? item.work_name : null,
             spare_id: item.spare_id,
             spare_name: item.item_type_code === 'SPARE' ? item.spare_name : null,
             remarks: item.remarks,

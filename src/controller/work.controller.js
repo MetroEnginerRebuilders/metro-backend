@@ -14,6 +14,14 @@ class WorkController {
         });
       }
 
+      const existingWorkByName = await workRepository.findByName(workName.trim());
+      if (existingWorkByName) {
+        return res.status(409).json({
+          success: false,
+          message: "Work name already exists",
+        });
+      }
+
       // Create work
       const work = await workRepository.create(workName.trim());
 
@@ -89,6 +97,14 @@ class WorkController {
         return res.status(404).json({
           success: false,
           message: "Work not found",
+        });
+      }
+
+      const duplicateWork = await workRepository.findByName(workName.trim());
+      if (duplicateWork && duplicateWork.work_id !== workId) {
+        return res.status(409).json({
+          success: false,
+          message: "Work name already exists",
         });
       }
 

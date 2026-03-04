@@ -14,6 +14,14 @@ class SpareController {
         });
       }
 
+      const existingSpareByName = await spareRepository.findByName(spareName.trim());
+      if (existingSpareByName) {
+        return res.status(409).json({
+          success: false,
+          message: "Spare name already exists",
+        });
+      }
+
       // Create spare
       const spare = await spareRepository.create(spareName.trim());
 
@@ -89,6 +97,14 @@ class SpareController {
         return res.status(404).json({
           success: false,
           message: "Spare not found",
+        });
+      }
+
+      const duplicateSpare = await spareRepository.findByName(spareName.trim());
+      if (duplicateSpare && duplicateSpare.spare_id !== spareId) {
+        return res.status(409).json({
+          success: false,
+          message: "Spare name already exists",
         });
       }
 

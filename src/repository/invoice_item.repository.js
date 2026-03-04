@@ -222,8 +222,27 @@ class InvoiceItemRepository {
             parseInt(availableResult.rows[0]?.available_quantity, 10) || 0;
 
           if ((Number(item.quantity) || 0) > availableStock) {
+            const [companyResult, modelResult, spareResult] = await Promise.all([
+              client.query(
+                "SELECT company_name FROM company WHERE company_id = $1",
+                [item.company_id]
+              ),
+              client.query(
+                "SELECT model_name FROM model WHERE model_id = $1",
+                [item.model_id]
+              ),
+              client.query(
+                "SELECT spare_name FROM spare WHERE spare_id = $1",
+                [item.spare_id]
+              ),
+            ]);
+
+            const companyName = companyResult.rows[0]?.company_name || "Unknown Company";
+            const modelName = modelResult.rows[0]?.model_name || "Unknown Model";
+            const spareName = spareResult.rows[0]?.spare_name || "Unknown Spare";
+
             throw new Error(
-              `Insufficient stock for spare_id ${item.spare_id}. Available ${availableStock}`
+              `Insufficient stock ${companyName}-${modelName}-${spareName}. We have only ${availableStock} units available for this item.`
             );
           }
         }

@@ -81,9 +81,16 @@ class ExpenseController {
       const page = parseInt(req.query.page) || 1;
       const limit = parseInt(req.query.limit) || 10;
       const search = req.query.search || '';
+      const financeCategoryName = req.query.financeCategoryName || '';
       const financeTypeCode = req.query.financeTypeCode || 'EXPENSE';
 
-      console.log("Listing expense records with params:", { page, limit, search, financeTypeCode });
+      console.log("Listing expense records with params:", {
+        page,
+        limit,
+        search,
+        financeCategoryName,
+        financeTypeCode
+      });
 
       // Validate financeTypeCode
       if (financeTypeCode !== 'EXPENSE') {
@@ -106,6 +113,15 @@ class ExpenseController {
       // Get all finance records and filter for expense
       const allFinance = await financeRepository.findAll();
       let expenseRecords = allFinance.filter(record => record.finance_type_id === expenseTypeId);
+
+      // Apply finance category name filter if provided
+      if (financeCategoryName && financeCategoryName.trim() !== '') {
+        const categoryFilter = financeCategoryName.toLowerCase().trim();
+        expenseRecords = expenseRecords.filter(record => {
+          const categoryName = record.finance_category_name || '';
+          return categoryName.toLowerCase().trim() === categoryFilter;
+        });
+      }
 
       // Apply search filter if search parameter exists
       if (search && search.trim() !== '') {

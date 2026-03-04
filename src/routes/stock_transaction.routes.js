@@ -7,6 +7,7 @@ const { verifyToken } = require('../middleware/auth.middleware');
 router.post('/stock-transaction', verifyToken, stockTransactionController.create);
 router.get('/stock-transaction/list', verifyToken, stockTransactionController.getStockList);
 router.get('/stock-transaction/companies', verifyToken, stockTransactionController.getCompanies);
+router.post('/stock-transaction/availability', verifyToken, stockTransactionController.getStockAvailabilityDetails);
 router.get('/stock-transaction/company/:companyId/models', verifyToken, stockTransactionController.getModelsByCompany);
 router.get('/stock-transaction/model/:modelId/spares', verifyToken, stockTransactionController.getSparesByModel);
 router.get('/stock-transaction', verifyToken, stockTransactionController.getAll);

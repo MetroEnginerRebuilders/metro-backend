@@ -110,11 +110,13 @@ class InvoiceRepository {
         ii.updated_at,
         it.item_type_name,
         it.item_type_code,
+        w.work_name,
         c.company_name,
         s.spare_name,
         m.model_name
       FROM invoice_items ii
       LEFT JOIN item_types it ON ii.item_type_id = it.item_type_id
+      LEFT JOIN work w ON ii.work_id = w.work_id
       LEFT JOIN company c ON ii.company_id = c.company_id
       LEFT JOIN spare s ON ii.spare_id = s.spare_id
       LEFT JOIN model m ON ii.model_id = m.model_id

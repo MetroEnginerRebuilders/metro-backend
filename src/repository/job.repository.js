@@ -488,7 +488,7 @@ class JobRepository {
         `
       );
 
-      let nextInvoiceSequence = 0;
+      let nextInvoiceSequence = 1;
       if (invoiceNumberResult.rows.length > 0) {
         const lastInvoiceNumber = invoiceNumberResult.rows[0].invoice_number;
         const match = lastInvoiceNumber.match(/^INV(\d+)$/);

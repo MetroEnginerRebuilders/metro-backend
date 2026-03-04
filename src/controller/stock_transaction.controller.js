@@ -315,7 +315,7 @@ const stockTransactionController = {
 
       res.status(200).json({
         success: true,
-        message: 'Companies retrieved successfully',
+        message: 'Companies with available stock retrieved successfully',
         data: companies
       });
     } catch (error) {
@@ -323,6 +323,39 @@ const stockTransactionController = {
       res.status(500).json({
         success: false,
         message: 'Failed to fetch companies',
+        error: error.message
+      });
+    }
+  },
+
+  // Get stock availability details for a specific company/model/spare
+  getStockAvailabilityDetails: async (req, res) => {
+    try {
+      const { companyId, modelId, spareId } = req.body;
+
+      if (!companyId || !modelId || !spareId) {
+        return res.status(400).json({
+          success: false,
+          message: 'companyId, modelId and spareId are required'
+        });
+      }
+
+      const data = await stockTransactionRepository.getStockAvailabilityDetails(
+        companyId,
+        modelId,
+        spareId
+      );
+
+      res.status(200).json({
+        success: true,
+        message: 'Stock availability fetched successfully',
+        data
+      });
+    } catch (error) {
+      console.error('Error fetching stock availability details:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Failed to fetch stock availability details',
         error: error.message
       });
     }
