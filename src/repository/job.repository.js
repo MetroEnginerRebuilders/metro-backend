@@ -2,6 +2,25 @@ const pool = require("../config/database");
 const dailyTransactionRepository = require("./daily_transaction.repository");
 
 class JobRepository {
+  async getLatheWorkIncomeMeta(client) {
+    const result = await client.query(
+      `
+      SELECT ft.finance_type_id, fc.finance_category_id
+      FROM finance_types ft
+      INNER JOIN finance_categories fc ON fc.finance_type_id = ft.finance_type_id
+      WHERE ft.finance_type_code = 'INCOME'
+        AND LOWER(fc.finance_category_name) = LOWER('Lathe Work')
+      LIMIT 1
+      `
+    );
+
+    if (!result.rows[0]) {
+      throw new Error("Lathe Work income category not found");
+    }
+
+    return result.rows[0];
+  }
+
   async findById(jobId) {
     const query = `
       SELECT
@@ -52,7 +71,7 @@ class JobRepository {
 
       const currentJobResult = await client.query(
         `
-        SELECT job_id, advance_amount, bank_account_id
+        SELECT job_id, job_number, advance_amount, bank_account_id
         FROM job
         WHERE job_id = $1
         FOR UPDATE
@@ -181,25 +200,116 @@ class JobRepository {
       ]);
 
       const updatedJob = updateResult.rows[0];
-      await dailyTransactionRepository.deleteByReference("job", jobId, client);
+      const advanceRemarkRef = `JOB_ADVANCE:${updatedJob.job_number}`;
+      const legacyAdvanceRemarkRef = `JOB_ADVANCE:${jobId}`;
 
-      if (updatedJob?.bank_account_id && Number(updatedJob.advance_amount) > 0) {
-        const incomeTypeId = await dailyTransactionRepository.getFinanceTypeIdByCode("INCOME", client);
-        await dailyTransactionRepository.create(
-          {
-            shop_id: null,
-            finance_types_id: incomeTypeId,
-            finance_categories_id: null,
-            reference_type: "job",
-            reference_id: updatedJob.job_id,
-            bank_account_id: updatedJob.bank_account_id,
-            amount: updatedJob.advance_amount,
-            transaction_date: updatedJob.start_date,
-            description: `Job advance - ${updatedJob.job_number}`,
-          },
-          client
-        );
+      const existingAdvanceFinanceResult = await client.query(
+        `
+        SELECT finance_id
+        FROM finance
+        WHERE remarks = ANY($1::text[])
+        ORDER BY created_at DESC
+        LIMIT 1
+        FOR UPDATE
+        `,
+        [[advanceRemarkRef, legacyAdvanceRemarkRef]]
+      );
+
+      const existingAdvanceFinance = existingAdvanceFinanceResult.rows[0];
+      const hasAdvance = Number(updatedJob?.advance_amount) > 0;
+      const hasBankAccount = !!updatedJob?.bank_account_id;
+
+      if (hasAdvance && hasBankAccount) {
+        const incomeMeta = await this.getLatheWorkIncomeMeta(client);
+
+        if (existingAdvanceFinance) {
+          const financeUpdateResult = await client.query(
+            `
+            UPDATE finance
+            SET
+              bank_account_id = $1,
+              finance_category_id = $2,
+              finance_type_id = $3,
+              amount = $4,
+              transaction_date = $5,
+              description = $6,
+              remarks = $7
+            WHERE finance_id = $8
+            RETURNING *
+            `,
+            [
+              updatedJob.bank_account_id,
+              incomeMeta.finance_category_id,
+              incomeMeta.finance_type_id,
+              updatedJob.advance_amount,
+              updatedJob.start_date,
+              `Advance of Job ${updatedJob.job_number}`,
+              advanceRemarkRef,
+              existingAdvanceFinance.finance_id,
+            ]
+          );
+
+          const updatedFinance = financeUpdateResult.rows[0];
+          await dailyTransactionRepository.deleteByReference("finance", updatedFinance.finance_id, client);
+          await dailyTransactionRepository.create(
+            {
+              finance_types_id: updatedFinance.finance_type_id,
+              finance_categories_id: updatedFinance.finance_category_id,
+              reference_type: "finance",
+              reference_id: updatedFinance.finance_id,
+              bank_account_id: updatedFinance.bank_account_id,
+              amount: updatedFinance.amount,
+              transaction_date: updatedFinance.transaction_date,
+              description: updatedFinance.description || updatedFinance.remarks,
+            },
+            client
+          );
+        } else {
+          const financeInsertResult = await client.query(
+            `
+            INSERT INTO finance (
+              bank_account_id,
+              finance_category_id,
+              finance_type_id,
+              amount,
+              transaction_date,
+              description,
+              remarks
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+            RETURNING *
+            `,
+            [
+              updatedJob.bank_account_id,
+              incomeMeta.finance_category_id,
+              incomeMeta.finance_type_id,
+              updatedJob.advance_amount,
+              updatedJob.start_date,
+              `Advance of Job ${updatedJob.job_number}`,
+              advanceRemarkRef,
+            ]
+          );
+
+          const createdFinance = financeInsertResult.rows[0];
+          await dailyTransactionRepository.create(
+            {
+              finance_types_id: createdFinance.finance_type_id,
+              finance_categories_id: createdFinance.finance_category_id,
+              reference_type: "finance",
+              reference_id: createdFinance.finance_id,
+              bank_account_id: createdFinance.bank_account_id,
+              amount: createdFinance.amount,
+              transaction_date: createdFinance.transaction_date,
+              description: createdFinance.description || createdFinance.remarks,
+            },
+            client
+          );
+        }
+      } else if (existingAdvanceFinance) {
+        await dailyTransactionRepository.deleteByReference("finance", existingAdvanceFinance.finance_id, client);
+        await client.query("DELETE FROM finance WHERE finance_id = $1", [existingAdvanceFinance.finance_id]);
       }
+
+      await dailyTransactionRepository.deleteByReference("job", jobId, client);
 
       await client.query("COMMIT");
 
@@ -259,6 +369,52 @@ class JobRepository {
           [invoice.invoice_id]
         );
 
+        const paymentRowsResult = await client.query(
+          `
+          SELECT invoice_payment_id
+          FROM invoice_payment
+          WHERE invoice_id = $1
+          `,
+          [invoice.invoice_id]
+        );
+
+        const paymentIds = paymentRowsResult.rows.map((row) => row.invoice_payment_id);
+
+        if (paymentIds.length > 0) {
+          const invoiceRemarkRef = `INVOICE_PAYMENT:${invoice.invoice_number}`;
+
+          const invoiceNumberLinkedFinanceResult = await client.query(
+            `
+            SELECT finance_id
+            FROM finance
+            WHERE remarks = $1
+            `,
+            [invoiceRemarkRef]
+          );
+
+          for (const linkedFinance of invoiceNumberLinkedFinanceResult.rows) {
+            await dailyTransactionRepository.deleteByReference("finance", linkedFinance.finance_id, client);
+            await client.query("DELETE FROM finance WHERE finance_id = $1", [linkedFinance.finance_id]);
+          }
+
+          for (const paymentId of paymentIds) {
+            const remarkRef = `INVOICE_PAYMENT:${paymentId}`;
+            const linkedFinanceResult = await client.query(
+              `
+              SELECT finance_id
+              FROM finance
+              WHERE remarks = $1
+              `,
+              [remarkRef]
+            );
+
+            for (const linkedFinance of linkedFinanceResult.rows) {
+              await dailyTransactionRepository.deleteByReference("finance", linkedFinance.finance_id, client);
+              await client.query("DELETE FROM finance WHERE finance_id = $1", [linkedFinance.finance_id]);
+            }
+          }
+        }
+
         for (const row of paymentSumsResult.rows) {
           if (!row.bank_account_id) {
             continue;
@@ -313,6 +469,20 @@ class JobRepository {
           `,
           [advanceAmount, job.bank_account_id]
         );
+      }
+
+      const advanceFinanceResult = await client.query(
+        `
+        SELECT finance_id
+        FROM finance
+        WHERE remarks = ANY($1::text[])
+        `,
+        [[`JOB_ADVANCE:${job.job_number}`, `JOB_ADVANCE:${job.job_id}`]]
+      );
+
+      for (const row of advanceFinanceResult.rows) {
+        await dailyTransactionRepository.deleteByReference("finance", row.finance_id, client);
+        await client.query("DELETE FROM finance WHERE finance_id = $1", [row.finance_id]);
       }
 
       await dailyTransactionRepository.deleteByReference("job", jobId, client);
@@ -461,18 +631,42 @@ class JobRepository {
           [jobData.advance_amount, jobData.start_date, jobData.bank_account_id]
         );
 
-        const incomeTypeId = await dailyTransactionRepository.getFinanceTypeIdByCode("INCOME", client);
+        const incomeMeta = await this.getLatheWorkIncomeMeta(client);
+        const financeInsertResult = await client.query(
+          `
+          INSERT INTO finance (
+            bank_account_id,
+            finance_category_id,
+            finance_type_id,
+            amount,
+            transaction_date,
+            description,
+            remarks
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+          RETURNING *
+          `,
+          [
+            jobData.bank_account_id,
+            incomeMeta.finance_category_id,
+            incomeMeta.finance_type_id,
+            jobData.advance_amount,
+            jobData.start_date,
+            `Advance of Job ${job.job_number}`,
+            `JOB_ADVANCE:${job.job_number}`,
+          ]
+        );
+
+        const createdFinance = financeInsertResult.rows[0];
         await dailyTransactionRepository.create(
           {
-            shop_id: null,
-            finance_types_id: incomeTypeId,
-            finance_categories_id: null,
-            reference_type: "job",
-            reference_id: job.job_id,
-            bank_account_id: jobData.bank_account_id,
-            amount: jobData.advance_amount,
-            transaction_date: jobData.start_date,
-            description: `Job advance - ${job.job_number}`,
+            finance_types_id: createdFinance.finance_type_id,
+            finance_categories_id: createdFinance.finance_category_id,
+            reference_type: "finance",
+            reference_id: createdFinance.finance_id,
+            bank_account_id: createdFinance.bank_account_id,
+            amount: createdFinance.amount,
+            transaction_date: createdFinance.transaction_date,
+            description: createdFinance.description || createdFinance.remarks,
           },
           client
         );

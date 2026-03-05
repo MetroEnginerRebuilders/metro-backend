@@ -2,6 +2,25 @@ const pool = require("../config/database");
 const dailyTransactionRepository = require("./daily_transaction.repository");
 
 class InvoicePaymentRepository {
+  async getLatheWorkIncomeMeta(client) {
+    const result = await client.query(
+      `
+      SELECT ft.finance_type_id, fc.finance_category_id
+      FROM finance_types ft
+      INNER JOIN finance_categories fc ON fc.finance_type_id = ft.finance_type_id
+      WHERE ft.finance_type_code = 'INCOME'
+        AND LOWER(fc.finance_category_name) = LOWER('Lathe Work')
+      LIMIT 1
+      `
+    );
+
+    if (!result.rows[0]) {
+      throw new Error("Lathe Work income category not found");
+    }
+
+    return result.rows[0];
+  }
+
   async findByInvoiceId(invoiceId) {
     const invoiceQuery = `
       SELECT invoice_id, total_amount
@@ -111,7 +130,7 @@ class InvoicePaymentRepository {
       await client.query("BEGIN");
 
       const invoiceQuery = `
-        SELECT invoice_id, total_amount, job_id
+        SELECT invoice_id, invoice_number, total_amount, job_id
         FROM invoice
         WHERE invoice_id = $1
       `;
@@ -167,19 +186,44 @@ class InvoicePaymentRepository {
 
       const payment = paymentResult.rows[0];
 
-      const incomeTypeId = await dailyTransactionRepository.getFinanceTypeIdByCode("INCOME", client);
+      const incomeMeta = await this.getLatheWorkIncomeMeta(client);
+
+      const financeInsertResult = await client.query(
+        `
+        INSERT INTO finance (
+          bank_account_id,
+          finance_category_id,
+          finance_type_id,
+          amount,
+          transaction_date,
+          description,
+          remarks
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+        RETURNING *
+        `,
+        [
+          payment.bank_account_id,
+          incomeMeta.finance_category_id,
+          incomeMeta.finance_type_id,
+          payment.amount_paid,
+          payment.payment_date,
+          `Payment of Invoice ${invoice.invoice_number}`,
+          `INVOICE_PAYMENT:${invoice.invoice_number}`,
+        ]
+      );
+
+      const createdFinance = financeInsertResult.rows[0];
 
       await dailyTransactionRepository.create(
         {
-          shop_id: null,
-          finance_types_id: incomeTypeId,
-          finance_categories_id: null,
-          reference_type: "invoice_payment",
-          reference_id: payment.invoice_payment_id,
-          bank_account_id: payment.bank_account_id,
-          amount: payment.amount_paid,
-          transaction_date: payment.payment_date,
-          description: payment.remarks || `Invoice payment - ${payment.invoice_id}`,
+          finance_types_id: createdFinance.finance_type_id,
+          finance_categories_id: createdFinance.finance_category_id,
+          reference_type: "finance",
+          reference_id: createdFinance.finance_id,
+          bank_account_id: createdFinance.bank_account_id,
+          amount: createdFinance.amount,
+          transaction_date: createdFinance.transaction_date,
+          description: createdFinance.description || createdFinance.remarks,
         },
         client
       );
