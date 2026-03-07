@@ -122,6 +122,91 @@ class BankAccountController {
     }
   }
 
+  // Get bank transactions by date range with search and pagination
+  async listTransactions(req, res) {
+    try {
+      const fromDate = req.body?.fromDate || req.query?.fromDate;
+      const toDate = req.body?.toDate || req.query?.toDate;
+      const search = req.body?.search || req.query?.search || "";
+      const hasLimit = req.body?.limit !== undefined || req.query?.limit !== undefined;
+      const hasPage = req.body?.page !== undefined || req.query?.page !== undefined;
+      const limit = hasLimit ? parseInt(req.body?.limit || req.query?.limit, 10) : null;
+      const page = hasPage ? parseInt(req.body?.page || req.query?.page, 10) : 1;
+
+      if (!fromDate || !toDate) {
+        return res.status(400).json({
+          success: false,
+          message: "fromDate and toDate are required",
+        });
+      }
+
+      const start = new Date(fromDate);
+      const end = new Date(toDate);
+
+      if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid fromDate or toDate",
+        });
+      }
+
+      if (start > end) {
+        return res.status(400).json({
+          success: false,
+          message: "fromDate must be less than or equal to toDate",
+        });
+      }
+
+      if (hasLimit && (Number.isNaN(limit) || limit < 1)) {
+        return res.status(400).json({
+          success: false,
+          message: "limit must be greater than 0",
+        });
+      }
+
+      if (hasPage && (Number.isNaN(page) || page < 1)) {
+        return res.status(400).json({
+          success: false,
+          message: "page must be greater than 0",
+        });
+      }
+
+      const result = await bankAccountRepository.findTransactions({
+        fromDate,
+        toDate,
+        search,
+        page,
+        limit,
+      });
+
+      const currentPage = hasLimit ? page : 1;
+      const totalPages = hasLimit ? Math.ceil(result.total / limit) : 1;
+
+      return res.json({
+        success: true,
+        data: result.data,
+        summary: {
+          ...result.summary,
+          net_amount: result.summary.total_income - result.summary.total_expense,
+        },
+        pagination: {
+          currentPage,
+          totalPages,
+          totalItems: result.total,
+          itemsPerPage: hasLimit ? limit : result.total,
+          hasNextPage: hasLimit ? currentPage < totalPages : false,
+          hasPreviousPage: hasLimit ? currentPage > 1 : false,
+        },
+      });
+    } catch (error) {
+      console.error("List bank transactions error:", error);
+      return res.status(500).json({
+        success: false,
+        message: "Internal server error",
+      });
+    }
+  }
+
   // Update bank account
   async update(req, res) {
     try {

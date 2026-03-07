@@ -6,6 +6,8 @@ const bankAccountController = require("../controller/bank_account.controller");
 router.post("/bank-account", bankAccountController.create);
 router.get("/bank-account", bankAccountController.list);
 router.get("/bank-account/active", bankAccountController.listActive);
+router.get("/bank-account/transactions", bankAccountController.listTransactions);
+router.post("/bank-account/transactions", bankAccountController.listTransactions);
 router.put("/bank-account/:bankAccountId", bankAccountController.update);
 router.delete("/bank-account/:bankAccountId", bankAccountController.delete);
 
