@@ -7,11 +7,13 @@ CREATE TABLE IF NOT EXISTS stock_transaction (
     description TEXT,
     bank_account_id UUID NOT NULL,
     total_amount DECIMAL(15, 2) NOT NULL DEFAULT 0,
+    payment_status VARCHAR(20) NOT NULL DEFAULT 'unpaid',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (shop_id) REFERENCES shop(shop_id) ON DELETE CASCADE,
     FOREIGN KEY (stock_type_id) REFERENCES stock_types(stock_type_id) ON DELETE RESTRICT,
-    FOREIGN KEY (bank_account_id) REFERENCES bank_account(bank_account_id) ON DELETE CASCADE
+    FOREIGN KEY (bank_account_id) REFERENCES bank_account(bank_account_id) ON DELETE CASCADE,
+    CONSTRAINT chk_stock_transaction_payment_status CHECK (payment_status IN ('unpaid', 'partial', 'paid', 'pending'))
 );
 
 -- Create indexes for better query performance
@@ -19,3 +21,4 @@ CREATE INDEX IF NOT EXISTS idx_stock_transaction_shop ON stock_transaction(shop_
 CREATE INDEX IF NOT EXISTS idx_stock_transaction_type ON stock_transaction(stock_type_id);
 CREATE INDEX IF NOT EXISTS idx_stock_transaction_bank_account ON stock_transaction(bank_account_id);
 CREATE INDEX IF NOT EXISTS idx_stock_transaction_order_date ON stock_transaction(order_date);
+CREATE INDEX IF NOT EXISTS idx_stock_transaction_payment_status ON stock_transaction(payment_status);

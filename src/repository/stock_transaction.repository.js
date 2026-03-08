@@ -90,6 +90,91 @@ const stockTransactionRepository = {
     }
   },
 
+  // Update stock transaction header and replace items
+  updateWithItems: async (stockTransactionId, stockTransactionData, items) => {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      const existingQuery = `
+        SELECT stock_transaction_id
+        FROM stock_transaction
+        WHERE stock_transaction_id = $1
+        FOR UPDATE
+      `;
+      const existingResult = await client.query(existingQuery, [stockTransactionId]);
+      if (existingResult.rows.length === 0) {
+        await client.query('ROLLBACK');
+        return null;
+      }
+
+      const updateHeaderQuery = `
+        UPDATE stock_transaction
+        SET
+          shop_id = $1,
+          stock_type_id = $2,
+          order_date = $3,
+          description = $4,
+          bank_account_id = $5,
+          total_amount = $6,
+          payment_status = $7,
+          updated_at = CURRENT_TIMESTAMP
+        WHERE stock_transaction_id = $8
+        RETURNING *
+      `;
+
+      const updatedHeaderResult = await client.query(updateHeaderQuery, [
+        stockTransactionData.shop_id,
+        stockTransactionData.stock_type_id,
+        stockTransactionData.order_date,
+        stockTransactionData.description,
+        stockTransactionData.bank_account_id,
+        stockTransactionData.total_amount,
+        stockTransactionData.payment_status,
+        stockTransactionId,
+      ]);
+
+      const deleteItemsQuery = `
+        DELETE FROM stock_transaction_items
+        WHERE stock_transaction_id = $1
+      `;
+      await client.query(deleteItemsQuery, [stockTransactionId]);
+
+      if (items && items.length > 0) {
+        const insertItemQuery = `
+          INSERT INTO stock_transaction_items (
+            stock_transaction_id,
+            company_id,
+            model_id,
+            spare_id,
+            quantity,
+            price
+          )
+          VALUES ($1, $2, $3, $4, $5, $6)
+        `;
+
+        for (const item of items) {
+          await client.query(insertItemQuery, [
+            stockTransactionId,
+            item.company_id,
+            item.model_id,
+            item.spare_id,
+            item.quantity,
+            item.price,
+          ]);
+        }
+      }
+
+      await client.query('COMMIT');
+      return updatedHeaderResult.rows[0];
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+  },
+
   // Find all stock transactions with pagination and search
   findAll: async (page = 1, limit = 10, searchTerm = '') => {
     const offset = (page - 1) * limit;
@@ -108,6 +193,7 @@ const stockTransactionRepository = {
         ba.account_name,
         ba.account_number,
         st.total_amount,
+        st.payment_status,
         st.created_at,
         st.updated_at
       FROM stock_transaction st
@@ -423,6 +509,65 @@ const stockTransactionRepository = {
       boughtPrice: row.bought_price !== null && row.bought_price !== undefined
         ? Number(row.bought_price)
         : null,
+    };
+  },
+
+  // Get purchase stock transaction summary list
+  getPurchaseStockList: async (page = 1, limit = 10, searchTerm = '') => {
+    const offset = (page - 1) * limit;
+
+    let query = `
+      SELECT
+        st.stock_transaction_id,
+        s.shop_name,
+        COUNT(sti.stock_transaction_item_id)::INT AS no_of_items,
+        COALESCE(st.total_amount, 0)::NUMERIC(15,2) AS total_price,
+        st.order_date AS purchase_date,
+        COALESCE(st.payment_status, 'unpaid') AS payment_status
+      FROM stock_transaction st
+      JOIN stock_types stt ON st.stock_type_id = stt.stock_type_id
+      LEFT JOIN shop s ON st.shop_id = s.shop_id
+      LEFT JOIN stock_transaction_items sti ON st.stock_transaction_id = sti.stock_transaction_id
+      WHERE stt.stock_type_code = 'PURCHASE'
+    `;
+
+    const queryParams = [];
+
+    if (searchTerm) {
+      queryParams.push(`%${searchTerm}%`);
+      query += ` AND (
+        COALESCE(s.shop_name, '') ILIKE $${queryParams.length}
+        OR COALESCE(st.payment_status, '') ILIKE $${queryParams.length}
+        OR CAST(COALESCE(st.total_amount, 0) AS TEXT) ILIKE $${queryParams.length}
+      )`;
+    }
+
+    query += `
+      GROUP BY st.stock_transaction_id, s.shop_name, st.total_amount, st.order_date, st.payment_status, st.created_at
+      ORDER BY st.order_date DESC, st.created_at DESC
+    `;
+
+    const countQuery = `SELECT COUNT(*) FROM (${query}) AS count_query`;
+    const countResult = await pool.query(countQuery, queryParams);
+    const totalRecords = parseInt(countResult.rows[0].count);
+
+    queryParams.push(limit, offset);
+    query += ` LIMIT $${queryParams.length - 1} OFFSET $${queryParams.length}`;
+
+    const result = await pool.query(query, queryParams);
+
+    return {
+      data: result.rows.map((row) => ({
+        ...row,
+        no_of_items: Number(row.no_of_items) || 0,
+        total_price: Number(row.total_price) || 0,
+      })),
+      pagination: {
+        currentPage: page,
+        totalPages: Math.ceil(totalRecords / limit),
+        totalRecords,
+        limit,
+      },
     };
   },
 

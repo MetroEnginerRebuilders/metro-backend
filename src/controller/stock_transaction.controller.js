@@ -123,6 +123,164 @@ const stockTransactionController = {
     }
   },
 
+  // Update stock transaction (header + all items)
+  update: async (req, res) => {
+    try {
+      const { stockTransactionId } = req.params;
+      const {
+        shopId,
+        transactionTypeId,
+        bankAccountId,
+        orderDate,
+        description,
+        items,
+        totalAmount,
+        paymentStatus
+      } = req.body;
+
+      if (!stockTransactionId) {
+        return res.status(400).json({
+          success: false,
+          message: 'stockTransactionId is required'
+        });
+      }
+
+      if (!transactionTypeId || !bankAccountId || !orderDate || !items || items.length === 0) {
+        return res.status(400).json({
+          success: false,
+          message: 'Missing required fields: transactionTypeId, bankAccountId, orderDate, items'
+        });
+      }
+
+      const stockType = await stockTransactionRepository.getStockTypeById(transactionTypeId);
+      if (!stockType) {
+        return res.status(400).json({
+          success: false,
+          message: 'Invalid transaction type ID'
+        });
+      }
+
+      if (stockType.stock_type_code === 'RETURN') {
+        for (const item of items) {
+          const availableStock = await stockTransactionRepository.getAvailableStock(
+            item.companyId,
+            item.modelId,
+            item.itemId
+          );
+
+          if (item.quantity > availableStock) {
+            return res.status(400).json({
+              success: false,
+              message: `Insufficient stock. We have only ${availableStock} units available for this item.`,
+              availableQuantity: availableStock,
+              requestedQuantity: item.quantity
+            });
+          }
+        }
+      }
+
+      const existingTransaction = await stockTransactionRepository.findById(stockTransactionId);
+      if (!existingTransaction) {
+        return res.status(404).json({
+          success: false,
+          message: 'Stock transaction not found'
+        });
+      }
+
+      const oldTotalAmount = Number(existingTransaction.total_amount) || 0;
+      const oldBankAccountId = existingTransaction.bank_account_id;
+      const oldStockTypeCode = existingTransaction.stock_type_code;
+
+      const calculatedTotal = items.reduce((sum, item) => {
+        return sum + (item.quantity * item.unitPrice);
+      }, 0);
+      const finalTotalAmount = totalAmount || calculatedTotal;
+
+      const validPaymentStatuses = ['unpaid', 'partial', 'paid', 'pending'];
+      const finalPaymentStatus = paymentStatus && validPaymentStatuses.includes(String(paymentStatus).toLowerCase())
+        ? String(paymentStatus).toLowerCase()
+        : (existingTransaction.payment_status || 'unpaid');
+
+      const stockTransactionData = {
+        shop_id: shopId || null,
+        stock_type_id: transactionTypeId,
+        order_date: orderDate,
+        description: description || '',
+        bank_account_id: bankAccountId,
+        total_amount: finalTotalAmount,
+        payment_status: finalPaymentStatus,
+      };
+
+      const itemsData = items.map(item => ({
+        company_id: item.companyId,
+        model_id: item.modelId,
+        spare_id: item.itemId,
+        quantity: item.quantity,
+        price: item.unitPrice
+      }));
+
+      const updatedTransaction = await stockTransactionRepository.updateWithItems(
+        stockTransactionId,
+        stockTransactionData,
+        itemsData
+      );
+
+      if (!updatedTransaction) {
+        return res.status(404).json({
+          success: false,
+          message: 'Stock transaction not found'
+        });
+      }
+
+      const currentDate = new Date().toISOString().split('T')[0];
+
+      if (oldBankAccountId && oldTotalAmount > 0) {
+        if (oldStockTypeCode === 'PURCHASE') {
+          await bankAccountRepository.addBalance(oldBankAccountId, oldTotalAmount, currentDate);
+        } else if (oldStockTypeCode === 'RETURN') {
+          await bankAccountRepository.subtractBalance(oldBankAccountId, oldTotalAmount, currentDate);
+        }
+      }
+
+      if (stockType.stock_type_code === 'PURCHASE') {
+        await bankAccountRepository.subtractBalance(bankAccountId, finalTotalAmount, currentDate);
+      } else if (stockType.stock_type_code === 'RETURN') {
+        await bankAccountRepository.addBalance(bankAccountId, finalTotalAmount, currentDate);
+      }
+
+      const financeTypeCode = stockType.stock_type_code === 'PURCHASE' ? 'EXPENSE' : 'INCOME';
+      const financeTypeId = await dailyTransactionRepository.getFinanceTypeIdByCode(financeTypeCode);
+
+      await dailyTransactionRepository.deleteByReference('stock', stockTransactionId);
+      await dailyTransactionRepository.create({
+        shop_id: updatedTransaction.shop_id,
+        finance_types_id: financeTypeId,
+        finance_categories_id: null,
+        reference_type: 'stock',
+        reference_id: stockTransactionId,
+        bank_account_id: updatedTransaction.bank_account_id,
+        amount: updatedTransaction.total_amount,
+        transaction_date: updatedTransaction.order_date,
+        description: updatedTransaction.description || null
+      });
+
+      const latestData = await stockTransactionRepository.findById(stockTransactionId);
+
+      res.status(200).json({
+        success: true,
+        message: 'Stock Updated Successfully',
+        data: latestData
+      });
+    } catch (error) {
+      console.error('Error updating stock transaction:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Failed to update stock transaction',
+        error: error.message
+      });
+    }
+  },
+
   // Get all stock transactions with pagination and search
   getAll: async (req, res) => {
     try {
@@ -171,6 +329,67 @@ const stockTransactionController = {
       res.status(500).json({
         success: false,
         message: 'Failed to fetch stock transaction',
+        error: error.message
+      });
+    }
+  },
+
+  // Get stock transaction details by transaction ID with name-based fields
+  getDetailsByTransactionId: async (req, res) => {
+    try {
+      const { stockTransactionId } = req.params;
+
+      const stockTransaction = await stockTransactionRepository.findById(stockTransactionId);
+
+      if (!stockTransaction) {
+        return res.status(404).json({
+          success: false,
+          message: 'Stock transaction not found'
+        });
+      }
+
+      const data = {
+        transaction: {
+          stock_transaction_id: stockTransaction.stock_transaction_id,
+          shop_id: stockTransaction.shop_id,
+          shop_name: stockTransaction.shop_name,
+          stock_type_id: stockTransaction.stock_type_id,
+          stock_type_name: stockTransaction.stock_type_name,
+          stock_type_code: stockTransaction.stock_type_code,
+          bank_account_id: stockTransaction.bank_account_id,
+          account_name: stockTransaction.account_name,
+          account_number: stockTransaction.account_number,
+          order_date: stockTransaction.order_date,
+          description: stockTransaction.description,
+          total_amount: Number(stockTransaction.total_amount) || 0,
+          payment_status: stockTransaction.payment_status || 'unpaid',
+          created_at: stockTransaction.created_at,
+          updated_at: stockTransaction.updated_at
+        },
+        items: (stockTransaction.items || []).map((item) => ({
+          stock_transaction_item_id: item.stock_transaction_item_id,
+          company_id: item.company_id,
+          company_name: item.company_name,
+          model_id: item.model_id,
+          model_name: item.model_name,
+          spare_id: item.spare_id,
+          spare_name: item.spare_name,
+          quantity: Number(item.quantity) || 0,
+          price: Number(item.price) || 0,
+          line_total: Number(item.line_total) || 0
+        }))
+      };
+
+      res.status(200).json({
+        success: true,
+        message: 'Stock transaction details retrieved successfully',
+        data
+      });
+    } catch (error) {
+      console.error('Error fetching stock transaction details:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Failed to fetch stock transaction details',
         error: error.message
       });
     }
@@ -383,6 +602,30 @@ const stockTransactionController = {
       res.status(500).json({
         success: false,
         message: 'Failed to fetch stock list',
+        error: error.message
+      });
+    }
+  },
+
+  // Get purchase stock summary list
+  getPurchaseStockList: async (req, res) => {
+    try {
+      const page = parseInt(req.query.page) || 1;
+      const limit = parseInt(req.query.limit) || 10;
+      const searchTerm = req.query.search || '';
+
+      const result = await stockTransactionRepository.getPurchaseStockList(page, limit, searchTerm);
+
+      res.status(200).json({
+        success: true,
+        message: 'Purchase stock list retrieved successfully',
+        ...result
+      });
+    } catch (error) {
+      console.error('Error fetching purchase stock list:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Failed to fetch purchase stock list',
         error: error.message
       });
     }
