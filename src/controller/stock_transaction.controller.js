@@ -281,6 +281,153 @@ const stockTransactionController = {
     }
   },
 
+  // Add payment for stock transaction
+  payStockTransaction: async (req, res) => {
+    try {
+      const {
+        stockTransactionId,
+        bankAccountId,
+        amountPaid,
+        paymentDate,
+        remarks,
+      } = req.body;
+
+      if (!stockTransactionId || !bankAccountId || amountPaid === undefined || amountPaid === null || !paymentDate) {
+        return res.status(400).json({
+          success: false,
+          message: 'Missing required fields: stockTransactionId, bankAccountId, amountPaid, paymentDate'
+        });
+      }
+
+      const paidAmount = Number(amountPaid);
+      if (Number.isNaN(paidAmount) || paidAmount <= 0) {
+        return res.status(400).json({
+          success: false,
+          message: 'amountPaid must be greater than 0'
+        });
+      }
+
+      const parsedPaymentDate = new Date(paymentDate);
+      if (Number.isNaN(parsedPaymentDate.getTime())) {
+        return res.status(400).json({
+          success: false,
+          message: 'Invalid paymentDate'
+        });
+      }
+
+      const bankAccount = await bankAccountRepository.findById(bankAccountId);
+      if (!bankAccount) {
+        return res.status(404).json({
+          success: false,
+          message: 'Bank account not found'
+        });
+      }
+
+      const result = await stockTransactionRepository.addPayment({
+        stockTransactionId,
+        bankAccountId,
+        amountPaid: paidAmount,
+        paymentOn: paymentDate,
+        remarks: remarks || null,
+      });
+
+      if (!result) {
+        return res.status(404).json({
+          success: false,
+          message: 'Stock transaction not found'
+        });
+      }
+
+      const stockTransaction = await stockTransactionRepository.findById(stockTransactionId);
+
+      await bankAccountRepository.subtractBalance(bankAccountId, paidAmount, paymentDate);
+
+      const expenseFinanceTypeId = await dailyTransactionRepository.getFinanceTypeIdByCode('EXPENSE');
+      await dailyTransactionRepository.create({
+        shop_id: stockTransaction?.shop_id || null,
+        finance_types_id: expenseFinanceTypeId,
+        finance_categories_id: null,
+        reference_type: 'stock_payment',
+        reference_id: result.payment.stock_payment_id,
+        bank_account_id: bankAccountId,
+        amount: paidAmount,
+        transaction_date: paymentDate,
+        description: remarks || `Stock payment for transaction ${stockTransactionId}`,
+      });
+
+      return res.status(201).json({
+        success: true,
+        message: 'Stock payment added successfully',
+        data: {
+          stock_payment_id: result.payment.stock_payment_id,
+          stock_transaction_id: result.payment.stock_transaction_id,
+          stock_type_id: result.payment.stock_type_id,
+          bank_account_id: result.payment.bank_account_id,
+          amount_paid: Number(result.payment.amount_paid) || 0,
+          payment_status: result.payment_status,
+          payment_on: result.payment.payment_on,
+          remarks: result.payment.remarks,
+          total_paid: result.total_paid,
+          total_amount: result.total_amount,
+          created_at: result.payment.created_at,
+          updated_at: result.payment.updated_at,
+        },
+      });
+    } catch (error) {
+      console.error('Error adding stock payment:', error);
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to add stock payment',
+        error: error.message,
+      });
+    }
+  },
+
+  // View payments by stock transaction ID
+  listPaymentsByStockTransactionId: async (req, res) => {
+    try {
+      const { stockTransactionId } = req.params;
+
+      if (!stockTransactionId) {
+        return res.status(400).json({
+          success: false,
+          message: 'stockTransactionId is required',
+        });
+      }
+
+      const result = await stockTransactionRepository.findPaymentsByStockTransactionId(stockTransactionId);
+
+      return res.status(200).json({
+        success: true,
+        message: 'Stock payments fetched successfully',
+        data: {
+          stock_transaction_id: stockTransactionId,
+          summary: {
+            payment_count: Number(result.summary?.payment_count || 0),
+            total_amount: Number(result.summary?.total_amount || 0),
+            total_paid: Number(result.summary?.total_paid || 0),
+            balance_amount: Number(result.summary?.balance_amount || 0),
+          },
+          payments: result.payments,
+        },
+      });
+    } catch (error) {
+      console.error('Error fetching stock payments:', error);
+
+      if (error.message === 'Stock transaction not found') {
+        return res.status(404).json({
+          success: false,
+          message: 'Stock transaction not found',
+        });
+      }
+
+      return res.status(500).json({
+        success: false,
+        message: 'Internal server error',
+      });
+    }
+  },
+
   // Get all stock transactions with pagination and search
   getAll: async (req, res) => {
     try {
@@ -362,6 +509,7 @@ const stockTransactionController = {
           order_date: stockTransaction.order_date,
           description: stockTransaction.description,
           total_amount: Number(stockTransaction.total_amount) || 0,
+          amount_paid: Number(stockTransaction.amount_paid) || 0,
           payment_status: stockTransaction.payment_status || 'unpaid',
           created_at: stockTransaction.created_at,
           updated_at: stockTransaction.updated_at

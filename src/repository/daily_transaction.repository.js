@@ -150,7 +150,21 @@ class DailyTransactionRepository {
         dt.bank_account_id,
         dt.amount,
         dt.transaction_date,
-        dt.description,
+        CASE
+          WHEN LOWER(COALESCE(dt.reference_type, '')) = 'stock_payment' THEN
+            CASE
+              WHEN dt.description IS NOT NULL
+               AND dt.description <> ''
+               AND sh_stock_payment.shop_name IS NOT NULL
+               AND sh_stock_payment.shop_name <> ''
+                THEN dt.description || ' - ' || sh_stock_payment.shop_name
+              WHEN dt.description IS NOT NULL
+               AND dt.description <> ''
+                THEN dt.description
+              ELSE sh_stock_payment.shop_name
+            END
+          ELSE dt.description
+        END AS description,
         dt.created_at,
         ft.finance_type_code,
         ft.finance_type_name,
@@ -196,6 +210,7 @@ class DailyTransactionRepository {
             END
           WHEN LOWER(COALESCE(dt.reference_type, '')) = 'salary' THEN s.staff_name
           WHEN LOWER(COALESCE(dt.reference_type, '')) = 'stock' THEN COALESCE(sh_dt.shop_name, sh_stock.shop_name, st.stock_type_name)
+          WHEN LOWER(COALESCE(dt.reference_type, '')) = 'stock_payment' THEN sh_stock_payment.shop_name
           ELSE NULL
         END AS reference_name
       FROM daily_transaction dt
@@ -248,6 +263,13 @@ class DailyTransactionRepository {
         ON stx.shop_id = sh_stock.shop_id
       LEFT JOIN stock_types st
         ON stx.stock_type_id = st.stock_type_id
+      LEFT JOIN stock_payment spay
+        ON LOWER(COALESCE(dt.reference_type, '')) = 'stock_payment'
+       AND dt.reference_id = spay.stock_payment_id
+      LEFT JOIN stock_transaction stx_pay
+        ON spay.stock_transaction_id = stx_pay.stock_transaction_id
+      LEFT JOIN shop sh_stock_payment
+        ON stx_pay.shop_id = sh_stock_payment.shop_id
       WHERE dt.transaction_date BETWEEN $1::date AND $2::date
         AND dt.finance_types_id = $3
       ORDER BY dt.transaction_date DESC, dt.created_at DESC

@@ -5,6 +5,8 @@ const { verifyToken } = require('../middleware/auth.middleware');
 
 // All routes are protected with JWT authentication
 router.post('/stock-transaction', verifyToken, stockTransactionController.create);
+router.post('/stock-transaction/payment', verifyToken, stockTransactionController.payStockTransaction);
+router.get('/stock-transaction/payment/:stockTransactionId', verifyToken, stockTransactionController.listPaymentsByStockTransactionId);
 router.put('/stock-transaction/:stockTransactionId', verifyToken, stockTransactionController.update);
 router.get('/stock-transaction/list', verifyToken, stockTransactionController.getStockList);
 router.get('/stock-transaction/purchase-list', verifyToken, stockTransactionController.getPurchaseStockList);

@@ -23,6 +23,168 @@ const stockTransactionRepository = {
     return result.rows[0];
   },
 
+  // Add stock payment and update stock transaction payment status
+  addPayment: async ({ stockTransactionId, bankAccountId, amountPaid, paymentOn, remarks = null }) => {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      const stockTransactionQuery = `
+        SELECT
+          st.stock_transaction_id,
+          st.stock_type_id,
+          st.total_amount
+        FROM stock_transaction st
+        WHERE st.stock_transaction_id = $1
+        FOR UPDATE
+      `;
+      const stockTransactionResult = await client.query(stockTransactionQuery, [stockTransactionId]);
+
+      if (stockTransactionResult.rows.length === 0) {
+        await client.query('ROLLBACK');
+        return null;
+      }
+
+      const stockTransaction = stockTransactionResult.rows[0];
+
+      const insertPaymentQuery = `
+        INSERT INTO stock_payment (
+          stock_transaction_id,
+          stock_type_id,
+          bank_account_id,
+          amount_paid,
+          payment_status,
+          payment_on,
+          remarks
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        RETURNING *
+      `;
+
+      const insertedPaymentResult = await client.query(insertPaymentQuery, [
+        stockTransactionId,
+        stockTransaction.stock_type_id,
+        bankAccountId,
+        amountPaid,
+        'unpaid',
+        paymentOn,
+        remarks,
+      ]);
+
+      const totalPaidQuery = `
+        SELECT COALESCE(SUM(amount_paid), 0) AS total_paid
+        FROM stock_payment
+        WHERE stock_transaction_id = $1
+      `;
+      const totalPaidResult = await client.query(totalPaidQuery, [stockTransactionId]);
+      const totalPaid = Number(totalPaidResult.rows[0]?.total_paid) || 0;
+      const totalAmount = Number(stockTransaction.total_amount) || 0;
+
+      let computedPaymentStatus = 'unpaid';
+      if (totalPaid > 0 && totalPaid < totalAmount) {
+        computedPaymentStatus = 'partial';
+      } else if (totalAmount > 0 && totalPaid >= totalAmount) {
+        computedPaymentStatus = 'paid';
+      }
+
+      const updateStockTransactionStatusQuery = `
+        UPDATE stock_transaction
+        SET payment_status = $1,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE stock_transaction_id = $2
+      `;
+      await client.query(updateStockTransactionStatusQuery, [computedPaymentStatus, stockTransactionId]);
+
+      const updatePaymentStatusQuery = `
+        UPDATE stock_payment
+        SET payment_status = $1,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE stock_payment_id = $2
+        RETURNING *
+      `;
+      const updatedPaymentResult = await client.query(updatePaymentStatusQuery, [
+        computedPaymentStatus,
+        insertedPaymentResult.rows[0].stock_payment_id,
+      ]);
+
+      await client.query('COMMIT');
+
+      return {
+        payment: updatedPaymentResult.rows[0],
+        total_paid: totalPaid,
+        total_amount: totalAmount,
+        payment_status: computedPaymentStatus,
+      };
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+  },
+
+  // Get stock payments by stock transaction ID
+  findPaymentsByStockTransactionId: async (stockTransactionId) => {
+    const stockTransactionQuery = `
+      SELECT stock_transaction_id, total_amount
+      FROM stock_transaction
+      WHERE stock_transaction_id = $1
+    `;
+    const stockTransactionResult = await pool.query(stockTransactionQuery, [stockTransactionId]);
+
+    if (!stockTransactionResult.rows[0]) {
+      throw new Error('Stock transaction not found');
+    }
+
+    const totalAmount = Number(stockTransactionResult.rows[0].total_amount) || 0;
+
+    const paymentsQuery = `
+      SELECT
+        sp.stock_payment_id,
+        sp.stock_transaction_id,
+        sp.stock_type_id,
+        sp.bank_account_id,
+        sp.amount_paid,
+        sp.payment_status,
+        sp.payment_on,
+        sp.remarks,
+        sp.created_at,
+        sp.updated_at,
+        ba.account_name,
+        ba.account_number
+      FROM stock_payment sp
+      LEFT JOIN bank_account ba ON sp.bank_account_id = ba.bank_account_id
+      WHERE sp.stock_transaction_id = $1
+      ORDER BY sp.payment_on ASC, sp.created_at ASC
+    `;
+
+    const summaryQuery = `
+      SELECT
+        COUNT(*)::INT AS payment_count,
+        COALESCE(SUM(amount_paid), 0) AS total_paid
+      FROM stock_payment
+      WHERE stock_transaction_id = $1
+    `;
+
+    const [paymentsResult, summaryResult] = await Promise.all([
+      pool.query(paymentsQuery, [stockTransactionId]),
+      pool.query(summaryQuery, [stockTransactionId]),
+    ]);
+
+    const totalPaid = Number(summaryResult.rows[0]?.total_paid) || 0;
+    const balanceAmount = totalAmount - totalPaid;
+
+    return {
+      payments: paymentsResult.rows,
+      summary: {
+        payment_count: Number(summaryResult.rows[0]?.payment_count) || 0,
+        total_amount: totalAmount,
+        total_paid: totalPaid,
+        balance_amount: balanceAmount,
+      },
+    };
+  },
+
   // Create stock transaction with items
   create: async (stockTransactionData, items) => {
     const client = await pool.connect();
@@ -194,12 +356,18 @@ const stockTransactionRepository = {
         ba.account_number,
         st.total_amount,
         st.payment_status,
+        COALESCE(sp_pay.total_amount_paid, 0)::NUMERIC(15,2) AS amount_paid,
         st.created_at,
         st.updated_at
       FROM stock_transaction st
       LEFT JOIN shop s ON st.shop_id = s.shop_id
       LEFT JOIN stock_types stt ON st.stock_type_id = stt.stock_type_id
       LEFT JOIN bank_account ba ON st.bank_account_id = ba.bank_account_id
+      LEFT JOIN (
+        SELECT stock_transaction_id, COALESCE(SUM(amount_paid), 0) AS total_amount_paid
+        FROM stock_payment
+        GROUP BY stock_transaction_id
+      ) sp_pay ON st.stock_transaction_id = sp_pay.stock_transaction_id
       WHERE 1=1
     `;
 
@@ -255,12 +423,19 @@ const stockTransactionRepository = {
         ba.account_name,
         ba.account_number,
         st.total_amount,
+        st.payment_status,
+        COALESCE(sp_pay.total_amount_paid, 0)::NUMERIC(15,2) AS amount_paid,
         st.created_at,
         st.updated_at
       FROM stock_transaction st
       LEFT JOIN shop s ON st.shop_id = s.shop_id
       LEFT JOIN stock_types stt ON st.stock_type_id = stt.stock_type_id
       LEFT JOIN bank_account ba ON st.bank_account_id = ba.bank_account_id
+      LEFT JOIN (
+        SELECT stock_transaction_id, COALESCE(SUM(amount_paid), 0) AS total_amount_paid
+        FROM stock_payment
+        GROUP BY stock_transaction_id
+      ) sp_pay ON st.stock_transaction_id = sp_pay.stock_transaction_id
       WHERE st.stock_transaction_id = $1
     `;
 
@@ -522,12 +697,18 @@ const stockTransactionRepository = {
         s.shop_name,
         COUNT(sti.stock_transaction_item_id)::INT AS no_of_items,
         COALESCE(st.total_amount, 0)::NUMERIC(15,2) AS total_price,
+        COALESCE(sp_pay.total_amount_paid, 0)::NUMERIC(15,2) AS amount_paid,
         st.order_date AS purchase_date,
         COALESCE(st.payment_status, 'unpaid') AS payment_status
       FROM stock_transaction st
       JOIN stock_types stt ON st.stock_type_id = stt.stock_type_id
       LEFT JOIN shop s ON st.shop_id = s.shop_id
       LEFT JOIN stock_transaction_items sti ON st.stock_transaction_id = sti.stock_transaction_id
+      LEFT JOIN (
+        SELECT stock_transaction_id, COALESCE(SUM(amount_paid), 0) AS total_amount_paid
+        FROM stock_payment
+        GROUP BY stock_transaction_id
+      ) sp_pay ON st.stock_transaction_id = sp_pay.stock_transaction_id
       WHERE stt.stock_type_code = 'PURCHASE'
     `;
 
@@ -543,7 +724,7 @@ const stockTransactionRepository = {
     }
 
     query += `
-      GROUP BY st.stock_transaction_id, s.shop_name, st.total_amount, st.order_date, st.payment_status, st.created_at
+      GROUP BY st.stock_transaction_id, s.shop_name, st.total_amount, sp_pay.total_amount_paid, st.order_date, st.payment_status, st.created_at
       ORDER BY st.order_date DESC, st.created_at DESC
     `;
 
@@ -561,6 +742,7 @@ const stockTransactionRepository = {
         ...row,
         no_of_items: Number(row.no_of_items) || 0,
         total_price: Number(row.total_price) || 0,
+        amount_paid: Number(row.amount_paid) || 0,
       })),
       pagination: {
         currentPage: page,
@@ -598,6 +780,7 @@ const stockTransactionRepository = {
           stt.stock_type_code,
           ba.bank_account_id,
           ba.account_name,
+          COALESCE(sp_pay.total_amount_paid, 0)::NUMERIC(15,2) AS amount_paid,
           st.created_at
         FROM stock_transaction_items sti
         JOIN stock_transaction st ON sti.stock_transaction_id = st.stock_transaction_id
@@ -607,6 +790,11 @@ const stockTransactionRepository = {
         JOIN model m ON sti.model_id = m.model_id
         JOIN spare sp ON sti.spare_id = sp.spare_id
         JOIN bank_account ba ON st.bank_account_id = ba.bank_account_id
+        LEFT JOIN (
+          SELECT stock_transaction_id, COALESCE(SUM(amount_paid), 0) AS total_amount_paid
+          FROM stock_payment
+          GROUP BY stock_transaction_id
+        ) sp_pay ON st.stock_transaction_id = sp_pay.stock_transaction_id
         WHERE stt.stock_type_code = $1
       `;
 

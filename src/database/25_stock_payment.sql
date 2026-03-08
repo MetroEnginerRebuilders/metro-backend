@@ -7,6 +7,7 @@ CREATE TABLE IF NOT EXISTS stock_payment (
     amount_paid DECIMAL(15, 2) NOT NULL DEFAULT 0,
     payment_status VARCHAR(20) NOT NULL DEFAULT 'unpaid',
     payment_on DATE NOT NULL,
+    remarks TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 
