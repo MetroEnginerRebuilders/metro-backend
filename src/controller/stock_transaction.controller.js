@@ -13,7 +13,9 @@ const stockTransactionController = {
         orderDate,
         description,
         items,
-        totalAmount
+        totalAmount,
+        paidAmount = 0,
+        useShopCredit = true,
       } = req.body;
 
       // Validate required fields
@@ -59,6 +61,7 @@ const stockTransactionController = {
       }, 0);
 
       const finalTotalAmount = totalAmount || calculatedTotal;
+      const immediatePaidAmount = Math.max(0, Number(paidAmount) || 0);
 
       // Prepare stock transaction data
       const stockTransactionData = {
@@ -82,36 +85,89 @@ const stockTransactionController = {
       // Create stock transaction
       const stockTransaction = await stockTransactionRepository.create(stockTransactionData, itemsData);
 
-      // Update bank account balance
-      const currentDate = new Date().toISOString().split('T')[0];
+      let adjustedByCredit = 0;
+      let paidNow = 0;
+      let initialPaymentResult = null;
+
       if (stockType.stock_type_code === 'PURCHASE') {
-        // Purchase: subtract from bank account (like expense)
-        await bankAccountRepository.subtractBalance(bankAccountId, finalTotalAmount, currentDate);
+        if (useShopCredit !== false && shopId) {
+          adjustedByCredit = await stockTransactionRepository.applyAvailableCreditToPurchase({
+            shopId,
+            stockTransactionId: stockTransaction.stock_transaction_id,
+            purchaseAmount: finalTotalAmount,
+            remarks: `Auto adjustment for purchase ${stockTransaction.stock_transaction_id}`,
+          });
+        }
+
+        const remainingPayable = Math.max(Number(finalTotalAmount) - adjustedByCredit, 0);
+        paidNow = Math.min(immediatePaidAmount, remainingPayable);
+
+        if (paidNow > 0) {
+          await bankAccountRepository.subtractBalance(bankAccountId, paidNow, orderDate);
+          initialPaymentResult = await stockTransactionRepository.addPayment({
+            stockTransactionId: stockTransaction.stock_transaction_id,
+            bankAccountId,
+            amountPaid: paidNow,
+            paymentOn: orderDate,
+            remarks: 'Initial purchase payment',
+          });
+        }
       } else if (stockType.stock_type_code === 'RETURN') {
-        // Return: add to bank account (like income)
-        await bankAccountRepository.addBalance(bankAccountId, finalTotalAmount, currentDate);
+        paidNow = Math.min(immediatePaidAmount, Number(finalTotalAmount) || 0);
+
+        if (paidNow > 0) {
+          await bankAccountRepository.addBalance(bankAccountId, paidNow, orderDate);
+          initialPaymentResult = await stockTransactionRepository.addPayment({
+            stockTransactionId: stockTransaction.stock_transaction_id,
+            bankAccountId,
+            amountPaid: paidNow,
+            paymentOn: orderDate,
+            remarks: 'Initial return settlement',
+          });
+        }
+
+        const creditAmount = Math.max(Number(finalTotalAmount) - paidNow, 0);
+        if (creditAmount > 0 && shopId) {
+          await stockTransactionRepository.createCreditLedgerEntry({
+            shopId,
+            stockTransactionId: stockTransaction.stock_transaction_id,
+            entryType: 'RETURN_CREDIT',
+            amount: creditAmount,
+            remarks: `Return credit for transaction ${stockTransaction.stock_transaction_id}`,
+          });
+        }
       }
 
-      const financeTypeCode = stockType.stock_type_code === 'PURCHASE' ? 'EXPENSE' : 'INCOME';
-      const financeTypeId = await dailyTransactionRepository.getFinanceTypeIdByCode(financeTypeCode);
+      const paymentMeta = await stockTransactionRepository.calculateAndUpdatePaymentStatus(stockTransaction.stock_transaction_id);
 
-      await dailyTransactionRepository.deleteByReference('stock', stockTransaction.stock_transaction_id);
-      await dailyTransactionRepository.create({
-        shop_id: stockTransaction.shop_id,
-        finance_types_id: financeTypeId,
-        finance_categories_id: null,
-        reference_type: 'stock',
-        reference_id: stockTransaction.stock_transaction_id,
-        bank_account_id: stockTransaction.bank_account_id,
-        amount: stockTransaction.total_amount,
-        transaction_date: stockTransaction.order_date,
-        description: stockTransaction.description || null
-      });
+      if (initialPaymentResult?.payment?.stock_payment_id && paidNow > 0) {
+        const financeTypeCode = stockType.stock_type_code === 'PURCHASE' ? 'EXPENSE' : 'INCOME';
+        const financeTypeId = await dailyTransactionRepository.getFinanceTypeIdByCode(financeTypeCode);
+
+        await dailyTransactionRepository.create({
+          shop_id: stockTransaction.shop_id,
+          finance_types_id: financeTypeId,
+          finance_categories_id: null,
+          reference_type: 'stock_payment',
+          reference_id: initialPaymentResult.payment.stock_payment_id,
+          bank_account_id: stockTransaction.bank_account_id,
+          amount: paidNow,
+          transaction_date: stockTransaction.order_date,
+          description: stockTransaction.description || `Initial ${String(stockType.stock_type_code || '').toLowerCase()} settlement`,
+        });
+      }
+
+      const latestData = await stockTransactionRepository.findById(stockTransaction.stock_transaction_id);
 
       res.status(201).json({
         success: true,
         message: 'Stock Created Successfully',
-        data: stockTransaction
+        data: {
+          ...latestData,
+          payment_summary: paymentMeta,
+          adjusted_by_credit: adjustedByCredit,
+          paid_now: paidNow,
+        }
       });
     } catch (error) {
       console.error('Error creating stock transaction:', error);
@@ -135,7 +191,9 @@ const stockTransactionController = {
         description,
         items,
         totalAmount,
-        paymentStatus
+        paymentStatus,
+        paidAmount = 0,
+        useShopCredit = true,
       } = req.body;
 
       if (!stockTransactionId) {
@@ -187,14 +245,11 @@ const stockTransactionController = {
         });
       }
 
-      const oldTotalAmount = Number(existingTransaction.total_amount) || 0;
-      const oldBankAccountId = existingTransaction.bank_account_id;
-      const oldStockTypeCode = existingTransaction.stock_type_code;
-
       const calculatedTotal = items.reduce((sum, item) => {
         return sum + (item.quantity * item.unitPrice);
       }, 0);
       const finalTotalAmount = totalAmount || calculatedTotal;
+      const immediatePaidAmount = Math.max(0, Number(paidAmount) || 0);
 
       const validPaymentStatuses = ['unpaid', 'partial', 'paid', 'pending'];
       const finalPaymentStatus = paymentStatus && validPaymentStatuses.includes(String(paymentStatus).toLowerCase())
@@ -232,44 +287,94 @@ const stockTransactionController = {
         });
       }
 
-      const currentDate = new Date().toISOString().split('T')[0];
+      let adjustedByCredit = 0;
+      let paidNow = 0;
+      let additionalPaymentResult = null;
 
-      if (oldBankAccountId && oldTotalAmount > 0) {
-        if (oldStockTypeCode === 'PURCHASE') {
-          await bankAccountRepository.addBalance(oldBankAccountId, oldTotalAmount, currentDate);
-        } else if (oldStockTypeCode === 'RETURN') {
-          await bankAccountRepository.subtractBalance(oldBankAccountId, oldTotalAmount, currentDate);
+      if (stockType.stock_type_code === 'PURCHASE') {
+        if (useShopCredit !== false && shopId) {
+          adjustedByCredit = await stockTransactionRepository.applyAvailableCreditToPurchase({
+            shopId,
+            stockTransactionId,
+            purchaseAmount: finalTotalAmount,
+            remarks: `Auto adjustment on update for purchase ${stockTransactionId}`,
+          });
+        }
+
+        const alreadyPaid = Number(existingTransaction.amount_paid) || 0;
+        const remainingPayable = Math.max(Number(finalTotalAmount) - adjustedByCredit - alreadyPaid, 0);
+        paidNow = Math.min(immediatePaidAmount, remainingPayable);
+
+        if (paidNow > 0) {
+          await bankAccountRepository.subtractBalance(bankAccountId, paidNow, orderDate);
+          additionalPaymentResult = await stockTransactionRepository.addPayment({
+            stockTransactionId,
+            bankAccountId,
+            amountPaid: paidNow,
+            paymentOn: orderDate,
+            remarks: 'Additional payment on purchase update',
+          });
+        }
+      } else if (stockType.stock_type_code === 'RETURN') {
+        const alreadyPaid = Number(existingTransaction.amount_paid) || 0;
+        const remainingReceivable = Math.max(Number(finalTotalAmount) - alreadyPaid, 0);
+        paidNow = Math.min(immediatePaidAmount, remainingReceivable);
+
+        if (paidNow > 0) {
+          await bankAccountRepository.addBalance(bankAccountId, paidNow, orderDate);
+          additionalPaymentResult = await stockTransactionRepository.addPayment({
+            stockTransactionId,
+            bankAccountId,
+            amountPaid: paidNow,
+            paymentOn: orderDate,
+            remarks: 'Additional settlement on return update',
+          });
+        }
+
+        const unsettledCredit = Math.max(Number(finalTotalAmount) - (alreadyPaid + paidNow), 0);
+        if (unsettledCredit > 0 && shopId) {
+          await stockTransactionRepository.createCreditLedgerEntry({
+            shopId,
+            stockTransactionId,
+            entryType: 'RETURN_CREDIT',
+            amount: unsettledCredit,
+            remarks: `Return credit on update for transaction ${stockTransactionId}`,
+          });
         }
       }
 
-      if (stockType.stock_type_code === 'PURCHASE') {
-        await bankAccountRepository.subtractBalance(bankAccountId, finalTotalAmount, currentDate);
-      } else if (stockType.stock_type_code === 'RETURN') {
-        await bankAccountRepository.addBalance(bankAccountId, finalTotalAmount, currentDate);
-      }
-
-      const financeTypeCode = stockType.stock_type_code === 'PURCHASE' ? 'EXPENSE' : 'INCOME';
-      const financeTypeId = await dailyTransactionRepository.getFinanceTypeIdByCode(financeTypeCode);
+      const paymentMeta = await stockTransactionRepository.calculateAndUpdatePaymentStatus(stockTransactionId);
 
       await dailyTransactionRepository.deleteByReference('stock', stockTransactionId);
-      await dailyTransactionRepository.create({
-        shop_id: updatedTransaction.shop_id,
-        finance_types_id: financeTypeId,
-        finance_categories_id: null,
-        reference_type: 'stock',
-        reference_id: stockTransactionId,
-        bank_account_id: updatedTransaction.bank_account_id,
-        amount: updatedTransaction.total_amount,
-        transaction_date: updatedTransaction.order_date,
-        description: updatedTransaction.description || null
-      });
+
+      if (additionalPaymentResult?.payment?.stock_payment_id && paidNow > 0) {
+        const financeTypeCode = stockType.stock_type_code === 'PURCHASE' ? 'EXPENSE' : 'INCOME';
+        const financeTypeId = await dailyTransactionRepository.getFinanceTypeIdByCode(financeTypeCode);
+
+        await dailyTransactionRepository.create({
+          shop_id: updatedTransaction.shop_id,
+          finance_types_id: financeTypeId,
+          finance_categories_id: null,
+          reference_type: 'stock_payment',
+          reference_id: additionalPaymentResult.payment.stock_payment_id,
+          bank_account_id: updatedTransaction.bank_account_id,
+          amount: paidNow,
+          transaction_date: updatedTransaction.order_date,
+          description: updatedTransaction.description || `Additional ${String(stockType.stock_type_code || '').toLowerCase()} settlement`,
+        });
+      }
 
       const latestData = await stockTransactionRepository.findById(stockTransactionId);
 
       res.status(200).json({
         success: true,
         message: 'Stock Updated Successfully',
-        data: latestData
+        data: {
+          ...latestData,
+          payment_summary: paymentMeta,
+          adjusted_by_credit: adjustedByCredit,
+          paid_now: paidNow,
+        }
       });
     } catch (error) {
       console.error('Error updating stock transaction:', error);
@@ -340,19 +445,34 @@ const stockTransactionController = {
 
       const stockTransaction = await stockTransactionRepository.findById(stockTransactionId);
 
-      await bankAccountRepository.subtractBalance(bankAccountId, paidAmount, paymentDate);
+      if (result.stock_type_code === 'PURCHASE') {
+        await bankAccountRepository.subtractBalance(bankAccountId, paidAmount, paymentDate);
+      } else if (result.stock_type_code === 'RETURN') {
+        await bankAccountRepository.addBalance(bankAccountId, paidAmount, paymentDate);
 
-      const expenseFinanceTypeId = await dailyTransactionRepository.getFinanceTypeIdByCode('EXPENSE');
+        if (stockTransaction?.shop_id) {
+          await stockTransactionRepository.createCreditLedgerEntry({
+            shopId: stockTransaction.shop_id,
+            stockTransactionId,
+            entryType: 'MANUAL_DEBIT',
+            amount: paidAmount,
+            remarks: remarks || `Return credit settled for transaction ${stockTransactionId}`,
+          });
+        }
+      }
+
+      const financeTypeCode = result.stock_type_code === 'RETURN' ? 'INCOME' : 'EXPENSE';
+      const financeTypeId = await dailyTransactionRepository.getFinanceTypeIdByCode(financeTypeCode);
       await dailyTransactionRepository.create({
         shop_id: stockTransaction?.shop_id || null,
-        finance_types_id: expenseFinanceTypeId,
+        finance_types_id: financeTypeId,
         finance_categories_id: null,
         reference_type: 'stock_payment',
         reference_id: result.payment.stock_payment_id,
         bank_account_id: bankAccountId,
         amount: paidAmount,
         transaction_date: paymentDate,
-        description: remarks || `Stock payment for transaction ${stockTransactionId}`,
+        description: remarks || `Stock ${String(result.stock_type_code || '').toLowerCase()} payment for transaction ${stockTransactionId}`,
       });
 
       return res.status(201).json({
@@ -508,8 +628,15 @@ const stockTransactionController = {
           account_number: stockTransaction.account_number,
           order_date: stockTransaction.order_date,
           description: stockTransaction.description,
-          total_amount: Number(stockTransaction.total_amount) || 0,
-          amount_paid: Number(stockTransaction.amount_paid) || 0,
+          ...(stockTransaction.stock_type_code === 'RETURN'
+            ? {
+                credit_amount: Number(stockTransaction.total_amount) || 0,
+                amount_get: Number(stockTransaction.amount_paid) || 0,
+              }
+            : {
+                total_amount: Number(stockTransaction.total_amount) || 0,
+                amount_paid: Number(stockTransaction.amount_paid) || 0,
+              }),
           payment_status: stockTransaction.payment_status || 'unpaid',
           created_at: stockTransaction.created_at,
           updated_at: stockTransaction.updated_at
@@ -774,6 +901,92 @@ const stockTransactionController = {
       res.status(500).json({
         success: false,
         message: 'Failed to fetch purchase stock list',
+        error: error.message
+      });
+    }
+  },
+
+  // Get returned stock summary list
+  getReturnStockList: async (req, res) => {
+    try {
+      const page = parseInt(req.query.page) || 1;
+      const limit = parseInt(req.query.limit) || 10;
+      const searchTerm = req.query.search || '';
+
+      const result = await stockTransactionRepository.getReturnStockList(page, limit, searchTerm);
+
+      res.status(200).json({
+        success: true,
+        message: 'Returned stock list retrieved successfully',
+        ...result
+      });
+    } catch (error) {
+      console.error('Error fetching returned stock list:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Failed to fetch returned stock list',
+        error: error.message
+      });
+    }
+  },
+
+  // Get returned stock transaction details by transaction ID
+  getReturnDetailsByTransactionId: async (req, res) => {
+    try {
+      const { stockTransactionId } = req.params;
+
+      const stockTransaction = await stockTransactionRepository.findById(stockTransactionId);
+
+      if (!stockTransaction || stockTransaction.stock_type_code !== 'RETURN') {
+        return res.status(404).json({
+          success: false,
+          message: 'Returned stock transaction not found'
+        });
+      }
+
+      const data = {
+        transaction: {
+          stock_transaction_id: stockTransaction.stock_transaction_id,
+          shop_id: stockTransaction.shop_id,
+          shop_name: stockTransaction.shop_name,
+          stock_type_id: stockTransaction.stock_type_id,
+          stock_type_name: stockTransaction.stock_type_name,
+          stock_type_code: stockTransaction.stock_type_code,
+          bank_account_id: stockTransaction.bank_account_id,
+          account_name: stockTransaction.account_name,
+          account_number: stockTransaction.account_number,
+          order_date: stockTransaction.order_date,
+          description: stockTransaction.description,
+          credit_amount: Number(stockTransaction.total_amount) || 0,
+          amount_get: Number(stockTransaction.amount_paid) || 0,
+          payment_status: stockTransaction.payment_status || 'unpaid',
+          created_at: stockTransaction.created_at,
+          updated_at: stockTransaction.updated_at
+        },
+        items: (stockTransaction.items || []).map((item) => ({
+          stock_transaction_item_id: item.stock_transaction_item_id,
+          company_id: item.company_id,
+          company_name: item.company_name,
+          model_id: item.model_id,
+          model_name: item.model_name,
+          spare_id: item.spare_id,
+          spare_name: item.spare_name,
+          quantity: Number(item.quantity) || 0,
+          price: Number(item.price) || 0,
+          line_total: Number(item.line_total) || 0
+        }))
+      };
+
+      res.status(200).json({
+        success: true,
+        message: 'Returned stock details retrieved successfully',
+        data
+      });
+    } catch (error) {
+      console.error('Error fetching returned stock details:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Failed to fetch returned stock details',
         error: error.message
       });
     }

@@ -23,6 +23,130 @@ const stockTransactionRepository = {
     return result.rows[0];
   },
 
+  getShopCreditBalance: async (shopId, client = null) => {
+    const executor = client || pool;
+    const query = `
+      SELECT
+        COALESCE(
+          SUM(
+            CASE
+              WHEN entry_type IN ('RETURN_CREDIT', 'MANUAL_CREDIT') THEN amount
+              WHEN entry_type IN ('PURCHASE_ADJUSTMENT', 'MANUAL_DEBIT') THEN -amount
+              ELSE 0
+            END
+          ),
+          0
+        ) AS credit_balance
+      FROM stock_credit_ledger
+      WHERE shop_id = $1
+    `;
+    const result = await executor.query(query, [shopId]);
+    return Number(result.rows[0]?.credit_balance) || 0;
+  },
+
+  createCreditLedgerEntry: async ({ shopId, stockTransactionId = null, entryType, amount, remarks = null }, client = null) => {
+    const executor = client || pool;
+    const query = `
+      INSERT INTO stock_credit_ledger (
+        shop_id,
+        stock_transaction_id,
+        entry_type,
+        amount,
+        remarks
+      )
+      VALUES ($1, $2, $3, $4, $5)
+      RETURNING *
+    `;
+    const result = await executor.query(query, [shopId, stockTransactionId, entryType, amount, remarks]);
+    return result.rows[0];
+  },
+
+  applyAvailableCreditToPurchase: async ({ shopId, stockTransactionId, purchaseAmount, remarks = null }, client = null) => {
+    if (!shopId || !purchaseAmount || purchaseAmount <= 0) {
+      return 0;
+    }
+
+    const executor = client || pool;
+    const availableCredit = await stockTransactionRepository.getShopCreditBalance(shopId, executor);
+    const appliedAmount = Math.min(availableCredit, Number(purchaseAmount) || 0);
+
+    if (appliedAmount > 0) {
+      await stockTransactionRepository.createCreditLedgerEntry(
+        {
+          shopId,
+          stockTransactionId,
+          entryType: 'PURCHASE_ADJUSTMENT',
+          amount: appliedAmount,
+          remarks: remarks || 'Auto credit adjustment on purchase',
+        },
+        executor
+      );
+    }
+
+    return appliedAmount;
+  },
+
+  calculateAndUpdatePaymentStatus: async (stockTransactionId, client = null) => {
+    const executor = client || pool;
+
+    const transactionQuery = `
+      SELECT stock_transaction_id, total_amount
+      FROM stock_transaction
+      WHERE stock_transaction_id = $1
+      FOR UPDATE
+    `;
+    const transactionResult = await executor.query(transactionQuery, [stockTransactionId]);
+    if (transactionResult.rows.length === 0) {
+      return null;
+    }
+
+    const totalAmount = Number(transactionResult.rows[0].total_amount) || 0;
+
+    const settledQuery = `
+      SELECT
+        COALESCE((
+          SELECT SUM(sp.amount_paid)
+          FROM stock_payment sp
+          WHERE sp.stock_transaction_id = $1
+        ), 0) AS total_paid,
+        COALESCE((
+          SELECT SUM(scl.amount)
+          FROM stock_credit_ledger scl
+          WHERE scl.stock_transaction_id = $1
+            AND scl.entry_type = 'PURCHASE_ADJUSTMENT'
+        ), 0) AS total_adjusted
+    `;
+    const settledResult = await executor.query(settledQuery, [stockTransactionId]);
+    const totalPaid = Number(settledResult.rows[0]?.total_paid) || 0;
+    const totalAdjusted = Number(settledResult.rows[0]?.total_adjusted) || 0;
+    const settledAmount = totalPaid + totalAdjusted;
+
+    let paymentStatus = 'unpaid';
+    if (settledAmount > 0 && settledAmount < totalAmount) {
+      paymentStatus = 'partial';
+    } else if (totalAmount > 0 && settledAmount >= totalAmount) {
+      paymentStatus = 'paid';
+    }
+
+    await executor.query(
+      `
+      UPDATE stock_transaction
+      SET payment_status = $1,
+          updated_at = CURRENT_TIMESTAMP
+      WHERE stock_transaction_id = $2
+      `,
+      [paymentStatus, stockTransactionId]
+    );
+
+    return {
+      payment_status: paymentStatus,
+      total_amount: totalAmount,
+      total_paid: totalPaid,
+      total_adjusted: totalAdjusted,
+      settled_amount: settledAmount,
+    };
+  },
+
   // Add stock payment and update stock transaction payment status
   addPayment: async ({ stockTransactionId, bankAccountId, amountPaid, paymentOn, remarks = null }) => {
     const client = await pool.connect();
@@ -33,8 +157,11 @@ const stockTransactionRepository = {
         SELECT
           st.stock_transaction_id,
           st.stock_type_id,
+          st.shop_id,
+          stt.stock_type_code,
           st.total_amount
         FROM stock_transaction st
+        LEFT JOIN stock_types stt ON st.stock_type_id = stt.stock_type_id
         WHERE st.stock_transaction_id = $1
         FOR UPDATE
       `;
@@ -71,29 +198,10 @@ const stockTransactionRepository = {
         remarks,
       ]);
 
-      const totalPaidQuery = `
-        SELECT COALESCE(SUM(amount_paid), 0) AS total_paid
-        FROM stock_payment
-        WHERE stock_transaction_id = $1
-      `;
-      const totalPaidResult = await client.query(totalPaidQuery, [stockTransactionId]);
-      const totalPaid = Number(totalPaidResult.rows[0]?.total_paid) || 0;
-      const totalAmount = Number(stockTransaction.total_amount) || 0;
-
-      let computedPaymentStatus = 'unpaid';
-      if (totalPaid > 0 && totalPaid < totalAmount) {
-        computedPaymentStatus = 'partial';
-      } else if (totalAmount > 0 && totalPaid >= totalAmount) {
-        computedPaymentStatus = 'paid';
-      }
-
-      const updateStockTransactionStatusQuery = `
-        UPDATE stock_transaction
-        SET payment_status = $1,
-            updated_at = CURRENT_TIMESTAMP
-        WHERE stock_transaction_id = $2
-      `;
-      await client.query(updateStockTransactionStatusQuery, [computedPaymentStatus, stockTransactionId]);
+      const statusMeta = await stockTransactionRepository.calculateAndUpdatePaymentStatus(stockTransactionId, client);
+      const computedPaymentStatus = statusMeta?.payment_status || 'unpaid';
+      const totalPaid = statusMeta?.total_paid || 0;
+      const totalAmount = statusMeta?.total_amount || Number(stockTransaction.total_amount) || 0;
 
       const updatePaymentStatusQuery = `
         UPDATE stock_payment
@@ -114,6 +222,8 @@ const stockTransactionRepository = {
         total_paid: totalPaid,
         total_amount: totalAmount,
         payment_status: computedPaymentStatus,
+        stock_type_code: stockTransaction.stock_type_code,
+        shop_id: stockTransaction.shop_id,
       };
     } catch (error) {
       await client.query('ROLLBACK');
@@ -710,6 +820,73 @@ const stockTransactionRepository = {
         GROUP BY stock_transaction_id
       ) sp_pay ON st.stock_transaction_id = sp_pay.stock_transaction_id
       WHERE stt.stock_type_code = 'PURCHASE'
+    `;
+
+    const queryParams = [];
+
+    if (searchTerm) {
+      queryParams.push(`%${searchTerm}%`);
+      query += ` AND (
+        COALESCE(s.shop_name, '') ILIKE $${queryParams.length}
+        OR COALESCE(st.payment_status, '') ILIKE $${queryParams.length}
+        OR CAST(COALESCE(st.total_amount, 0) AS TEXT) ILIKE $${queryParams.length}
+      )`;
+    }
+
+    query += `
+      GROUP BY st.stock_transaction_id, s.shop_name, st.total_amount, sp_pay.total_amount_paid, st.order_date, st.payment_status, st.created_at
+      ORDER BY st.order_date DESC, st.created_at DESC
+    `;
+
+    const countQuery = `SELECT COUNT(*) FROM (${query}) AS count_query`;
+    const countResult = await pool.query(countQuery, queryParams);
+    const totalRecords = parseInt(countResult.rows[0].count);
+
+    queryParams.push(limit, offset);
+    query += ` LIMIT $${queryParams.length - 1} OFFSET $${queryParams.length}`;
+
+    const result = await pool.query(query, queryParams);
+
+    return {
+      data: result.rows.map((row) => ({
+        ...row,
+        no_of_items: Number(row.no_of_items) || 0,
+        total_price: Number(row.total_price) || 0,
+        amount_paid: Number(row.amount_paid) || 0,
+      })),
+      pagination: {
+        currentPage: page,
+        totalPages: Math.ceil(totalRecords / limit),
+        totalRecords,
+        limit,
+      },
+    };
+  },
+
+  // Get return stock transaction summary list
+  getReturnStockList: async (page = 1, limit = 10, searchTerm = '') => {
+    const offset = (page - 1) * limit;
+
+    let query = `
+      SELECT
+        st.stock_transaction_id,
+        s.shop_name,
+        COUNT(sti.stock_transaction_item_id)::INT AS no_of_items,
+        COALESCE(st.total_amount, 0)::NUMERIC(15,2) AS total_price,
+        COALESCE(sp_pay.total_amount_paid, 0)::NUMERIC(15,2) AS amount_paid,
+        st.order_date AS purchase_date,
+        COALESCE(st.payment_status, 'unpaid') AS payment_status
+      FROM stock_transaction st
+      JOIN stock_types stt ON st.stock_type_id = stt.stock_type_id
+      LEFT JOIN shop s ON st.shop_id = s.shop_id
+      LEFT JOIN stock_transaction_items sti ON st.stock_transaction_id = sti.stock_transaction_id
+      LEFT JOIN (
+        SELECT stock_transaction_id, COALESCE(SUM(amount_paid), 0) AS total_amount_paid
+        FROM stock_payment
+        GROUP BY stock_transaction_id
+      ) sp_pay ON st.stock_transaction_id = sp_pay.stock_transaction_id
+      WHERE stt.stock_type_code = 'RETURN'
+        AND st.shop_id IS NOT NULL
     `;
 
     const queryParams = [];
