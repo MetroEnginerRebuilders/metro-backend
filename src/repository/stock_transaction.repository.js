@@ -44,6 +44,33 @@ const stockTransactionRepository = {
     return Number(result.rows[0]?.credit_balance) || 0;
   },
 
+  getShopCreditSummary: async (shopId, client = null) => {
+    const executor = client || pool;
+    const query = `
+      SELECT
+        COALESCE(
+          SUM(
+            CASE
+              WHEN entry_type IN ('RETURN_CREDIT', 'MANUAL_CREDIT') THEN amount
+              WHEN entry_type IN ('PURCHASE_ADJUSTMENT', 'MANUAL_DEBIT') THEN -amount
+              ELSE 0
+            END
+          ),
+          0
+        ) AS credit_amount_to_get
+      FROM stock_credit_ledger
+      WHERE shop_id = $1
+    `;
+
+    const result = await executor.query(query, [shopId]);
+    const row = result.rows[0] || {};
+
+    return {
+      credit_amount_to_get: Number(row.credit_amount_to_get) || 0,
+      has_credit_balance: (Number(row.credit_amount_to_get) || 0) > 0,
+    };
+  },
+
   createCreditLedgerEntry: async ({ shopId, stockTransactionId = null, entryType, amount, remarks = null }, client = null) => {
     const executor = client || pool;
     const query = `
@@ -163,7 +190,7 @@ const stockTransactionRepository = {
         FROM stock_transaction st
         LEFT JOIN stock_types stt ON st.stock_type_id = stt.stock_type_id
         WHERE st.stock_transaction_id = $1
-        FOR UPDATE
+        FOR UPDATE OF st
       `;
       const stockTransactionResult = await client.query(stockTransactionQuery, [stockTransactionId]);
 
@@ -173,6 +200,30 @@ const stockTransactionRepository = {
       }
 
       const stockTransaction = stockTransactionResult.rows[0];
+      const totalAmount = Number(stockTransaction.total_amount) || 0;
+
+      const settlementQuery = `
+        SELECT
+          COALESCE((
+            SELECT SUM(sp.amount_paid)
+            FROM stock_payment sp
+            WHERE sp.stock_transaction_id = $1
+          ), 0) AS total_paid,
+          COALESCE((
+            SELECT SUM(scl.amount)
+            FROM stock_credit_ledger scl
+            WHERE scl.stock_transaction_id = $1
+              AND scl.entry_type = 'PURCHASE_ADJUSTMENT'
+          ), 0) AS total_adjusted
+      `;
+      const settlementResult = await client.query(settlementQuery, [stockTransactionId]);
+      const totalPaidBefore = Number(settlementResult.rows[0]?.total_paid) || 0;
+      const totalAdjustedBefore = Number(settlementResult.rows[0]?.total_adjusted) || 0;
+      const remainingBalance = Math.max(totalAmount - (totalPaidBefore + totalAdjustedBefore), 0);
+
+      if (Number(amountPaid) > remainingBalance) {
+        throw new Error('amountPaid exceeds balance amount');
+      }
 
       const insertPaymentQuery = `
         INSERT INTO stock_payment (
@@ -201,7 +252,7 @@ const stockTransactionRepository = {
       const statusMeta = await stockTransactionRepository.calculateAndUpdatePaymentStatus(stockTransactionId, client);
       const computedPaymentStatus = statusMeta?.payment_status || 'unpaid';
       const totalPaid = statusMeta?.total_paid || 0;
-      const totalAmount = statusMeta?.total_amount || Number(stockTransaction.total_amount) || 0;
+      const totalAmountAfter = statusMeta?.total_amount || totalAmount;
 
       const updatePaymentStatusQuery = `
         UPDATE stock_payment
@@ -220,7 +271,7 @@ const stockTransactionRepository = {
       return {
         payment: updatedPaymentResult.rows[0],
         total_paid: totalPaid,
-        total_amount: totalAmount,
+        total_amount: totalAmountAfter,
         payment_status: computedPaymentStatus,
         stock_type_code: stockTransaction.stock_type_code,
         shop_id: stockTransaction.shop_id,
@@ -301,6 +352,13 @@ const stockTransactionRepository = {
     try {
       await client.query('BEGIN');
 
+      if (!stockTransactionData.bank_account_id) {
+        await client.query(`
+          ALTER TABLE stock_transaction
+          ALTER COLUMN bank_account_id DROP NOT NULL
+        `);
+      }
+
       // Insert stock transaction header
       const insertQuery = `
         INSERT INTO stock_transaction (
@@ -367,6 +425,13 @@ const stockTransactionRepository = {
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
+
+      if (!stockTransactionData.bank_account_id) {
+        await client.query(`
+          ALTER TABLE stock_transaction
+          ALTER COLUMN bank_account_id DROP NOT NULL
+        `);
+      }
 
       const existingQuery = `
         SELECT stock_transaction_id
@@ -569,8 +634,31 @@ const stockTransactionRepository = {
       ORDER BY sti.created_at
     `;
 
+    const creditLedgerQuery = `
+      SELECT
+        credit_ledger_id,
+        entry_type,
+        amount,
+        remarks,
+        created_at,
+        updated_at
+      FROM stock_credit_ledger
+      WHERE stock_transaction_id = $1
+      ORDER BY created_at ASC
+    `;
+
+    const creditSummaryQuery = `
+      SELECT
+        COALESCE(SUM(CASE WHEN entry_type IN ('RETURN_CREDIT', 'MANUAL_CREDIT') THEN amount ELSE 0 END), 0) AS credit_amount,
+        COALESCE(SUM(CASE WHEN entry_type IN ('PURCHASE_ADJUSTMENT', 'MANUAL_DEBIT') THEN amount ELSE 0 END), 0) AS adjusted_amount
+      FROM stock_credit_ledger
+      WHERE stock_transaction_id = $1
+    `;
+
     const headerResult = await pool.query(headerQuery, [id]);
     const itemsResult = await pool.query(itemsQuery, [id]);
+    const creditLedgerResult = await pool.query(creditLedgerQuery, [id]);
+    const creditSummaryResult = await pool.query(creditSummaryQuery, [id]);
 
     if (headerResult.rows.length === 0) {
       return null;
@@ -578,7 +666,15 @@ const stockTransactionRepository = {
 
     return {
       ...headerResult.rows[0],
-      items: itemsResult.rows
+      items: itemsResult.rows,
+      credit_ledger: creditLedgerResult.rows.map((row) => ({
+        ...row,
+        amount: Number(row.amount) || 0,
+      })),
+      credit_summary: {
+        credit_amount: Number(creditSummaryResult.rows[0]?.credit_amount) || 0,
+        adjusted_amount: Number(creditSummaryResult.rows[0]?.adjusted_amount) || 0,
+      },
     };
   },
 
@@ -966,7 +1062,7 @@ const stockTransactionRepository = {
         JOIN company c ON sti.company_id = c.company_id
         JOIN model m ON sti.model_id = m.model_id
         JOIN spare sp ON sti.spare_id = sp.spare_id
-        JOIN bank_account ba ON st.bank_account_id = ba.bank_account_id
+        LEFT JOIN bank_account ba ON st.bank_account_id = ba.bank_account_id
         LEFT JOIN (
           SELECT stock_transaction_id, COALESCE(SUM(amount_paid), 0) AS total_amount_paid
           FROM stock_payment

@@ -5,14 +5,14 @@ CREATE TABLE IF NOT EXISTS stock_transaction (
     stock_type_id UUID NOT NULL,
     order_date DATE NOT NULL,
     description TEXT,
-    bank_account_id UUID NOT NULL,
+    bank_account_id UUID,
     total_amount DECIMAL(15, 2) NOT NULL DEFAULT 0,
     payment_status VARCHAR(20) NOT NULL DEFAULT 'unpaid',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (shop_id) REFERENCES shop(shop_id) ON DELETE CASCADE,
     FOREIGN KEY (stock_type_id) REFERENCES stock_types(stock_type_id) ON DELETE RESTRICT,
-    FOREIGN KEY (bank_account_id) REFERENCES bank_account(bank_account_id) ON DELETE CASCADE,
+    FOREIGN KEY (bank_account_id) REFERENCES bank_account(bank_account_id) ON DELETE SET NULL,
     CONSTRAINT chk_stock_transaction_payment_status CHECK (payment_status IN ('unpaid', 'partial', 'paid', 'pending'))
 );
 

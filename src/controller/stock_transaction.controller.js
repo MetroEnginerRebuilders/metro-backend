@@ -1,6 +1,7 @@
 const stockTransactionRepository = require('../repository/stock_transaction.repository');
 const bankAccountRepository = require('../repository/bank_account.repository');
 const dailyTransactionRepository = require('../repository/daily_transaction.repository');
+const shopRepository = require('../repository/shop.repository');
 
 const stockTransactionController = {
   // Create stock transaction
@@ -19,10 +20,10 @@ const stockTransactionController = {
       } = req.body;
 
       // Validate required fields
-      if (!transactionTypeId || !bankAccountId || !orderDate || !items || items.length === 0) {
+      if (!transactionTypeId || !orderDate || !items || items.length === 0) {
         return res.status(400).json({
           success: false,
-          message: 'Missing required fields: transactionTypeId, bankAccountId, orderDate, items'
+          message: 'Missing required fields: transactionTypeId, orderDate, items'
         });
       }
 
@@ -63,13 +64,20 @@ const stockTransactionController = {
       const finalTotalAmount = totalAmount || calculatedTotal;
       const immediatePaidAmount = Math.max(0, Number(paidAmount) || 0);
 
+      if (immediatePaidAmount > 0 && !bankAccountId) {
+        return res.status(400).json({
+          success: false,
+          message: 'bankAccountId is required when paidAmount is greater than 0'
+        });
+      }
+
       // Prepare stock transaction data
       const stockTransactionData = {
         shop_id: shopId || null,
         stock_type_id: transactionTypeId,
         order_date: orderDate,
         description: description || '',
-        bank_account_id: bankAccountId,
+        bank_account_id: bankAccountId || null,
         total_amount: finalTotalAmount
       };
 
@@ -84,6 +92,8 @@ const stockTransactionController = {
 
       // Create stock transaction
       const stockTransaction = await stockTransactionRepository.create(stockTransactionData, itemsData);
+      const selectedShop = shopId ? await shopRepository.findById(shopId) : null;
+      const selectedShopName = selectedShop?.shop_name || 'selected shop';
 
       let adjustedByCredit = 0;
       let paidNow = 0;
@@ -95,7 +105,7 @@ const stockTransactionController = {
             shopId,
             stockTransactionId: stockTransaction.stock_transaction_id,
             purchaseAmount: finalTotalAmount,
-            remarks: `Auto adjustment for purchase ${stockTransaction.stock_transaction_id}`,
+            remarks: `Auto adjustment of credit from ${selectedShopName}`,
           });
         }
 
@@ -133,7 +143,7 @@ const stockTransactionController = {
             stockTransactionId: stockTransaction.stock_transaction_id,
             entryType: 'RETURN_CREDIT',
             amount: creditAmount,
-            remarks: `Return credit for transaction ${stockTransaction.stock_transaction_id}`,
+            remarks: `Return credit from ${selectedShopName}`,
           });
         }
       }
@@ -203,10 +213,10 @@ const stockTransactionController = {
         });
       }
 
-      if (!transactionTypeId || !bankAccountId || !orderDate || !items || items.length === 0) {
+      if (!transactionTypeId || !orderDate || !items || items.length === 0) {
         return res.status(400).json({
           success: false,
-          message: 'Missing required fields: transactionTypeId, bankAccountId, orderDate, items'
+          message: 'Missing required fields: transactionTypeId, orderDate, items'
         });
       }
 
@@ -251,6 +261,13 @@ const stockTransactionController = {
       const finalTotalAmount = totalAmount || calculatedTotal;
       const immediatePaidAmount = Math.max(0, Number(paidAmount) || 0);
 
+      if (immediatePaidAmount > 0 && !bankAccountId) {
+        return res.status(400).json({
+          success: false,
+          message: 'bankAccountId is required when paidAmount is greater than 0'
+        });
+      }
+
       const validPaymentStatuses = ['unpaid', 'partial', 'paid', 'pending'];
       const finalPaymentStatus = paymentStatus && validPaymentStatuses.includes(String(paymentStatus).toLowerCase())
         ? String(paymentStatus).toLowerCase()
@@ -261,7 +278,7 @@ const stockTransactionController = {
         stock_type_id: transactionTypeId,
         order_date: orderDate,
         description: description || '',
-        bank_account_id: bankAccountId,
+        bank_account_id: bankAccountId || null,
         total_amount: finalTotalAmount,
         payment_status: finalPaymentStatus,
       };
@@ -279,6 +296,8 @@ const stockTransactionController = {
         stockTransactionData,
         itemsData
       );
+      const selectedShop = shopId ? await shopRepository.findById(shopId) : null;
+      const selectedShopName = selectedShop?.shop_name || 'selected shop';
 
       if (!updatedTransaction) {
         return res.status(404).json({
@@ -297,7 +316,7 @@ const stockTransactionController = {
             shopId,
             stockTransactionId,
             purchaseAmount: finalTotalAmount,
-            remarks: `Auto adjustment on update for purchase ${stockTransactionId}`,
+            remarks: `Auto adjustment of credit from ${selectedShopName}`,
           });
         }
 
@@ -338,7 +357,7 @@ const stockTransactionController = {
             stockTransactionId,
             entryType: 'RETURN_CREDIT',
             amount: unsettledCredit,
-            remarks: `Return credit on update for transaction ${stockTransactionId}`,
+            remarks: `Return credit from ${selectedShopName}`,
           });
         }
       }
@@ -451,13 +470,18 @@ const stockTransactionController = {
         await bankAccountRepository.addBalance(bankAccountId, paidAmount, paymentDate);
 
         if (stockTransaction?.shop_id) {
+          const availableCredit = await stockTransactionRepository.getShopCreditBalance(stockTransaction.shop_id);
+          const debitAmount = Math.min(availableCredit, paidAmount);
+
+          if (debitAmount > 0) {
           await stockTransactionRepository.createCreditLedgerEntry({
             shopId: stockTransaction.shop_id,
             stockTransactionId,
             entryType: 'MANUAL_DEBIT',
-            amount: paidAmount,
-            remarks: remarks || `Return credit settled for transaction ${stockTransactionId}`,
+            amount: debitAmount,
+            remarks: remarks || `Credit settlement from ${stockTransaction?.shop_name || 'selected shop'}`,
           });
+          }
         }
       }
 
@@ -495,6 +519,14 @@ const stockTransactionController = {
       });
     } catch (error) {
       console.error('Error adding stock payment:', error);
+
+      if (error.message === 'amountPaid exceeds balance amount') {
+        return res.status(400).json({
+          success: false,
+          message: error.message,
+        });
+      }
+
       return res.status(500).json({
         success: false,
         message: 'Failed to add stock payment',
@@ -641,6 +673,17 @@ const stockTransactionController = {
           created_at: stockTransaction.created_at,
           updated_at: stockTransaction.updated_at
         },
+        credit_details: {
+          credit_amount: Number(stockTransaction.credit_summary?.credit_amount) || 0,
+          adjusted_amount: Number(stockTransaction.credit_summary?.adjusted_amount) || 0,
+        },
+        credit_entries: (stockTransaction.credit_ledger || []).map((entry) => ({
+          credit_ledger_id: entry.credit_ledger_id,
+          entry_type: entry.entry_type,
+          amount: Number(entry.amount) || 0,
+          remarks: entry.remarks,
+          created_at: entry.created_at,
+        })),
         items: (stockTransaction.items || []).map((item) => ({
           stock_transaction_item_id: item.stock_transaction_item_id,
           company_id: item.company_id,
@@ -963,6 +1006,17 @@ const stockTransactionController = {
           created_at: stockTransaction.created_at,
           updated_at: stockTransaction.updated_at
         },
+        credit_details: {
+          credit_amount: Number(stockTransaction.credit_summary?.credit_amount) || 0,
+          adjusted_amount: Number(stockTransaction.credit_summary?.adjusted_amount) || 0,
+        },
+        credit_entries: (stockTransaction.credit_ledger || []).map((entry) => ({
+          credit_ledger_id: entry.credit_ledger_id,
+          entry_type: entry.entry_type,
+          amount: Number(entry.amount) || 0,
+          remarks: entry.remarks,
+          created_at: entry.created_at,
+        })),
         items: (stockTransaction.items || []).map((item) => ({
           stock_transaction_item_id: item.stock_transaction_item_id,
           company_id: item.company_id,
@@ -988,6 +1042,39 @@ const stockTransactionController = {
         success: false,
         message: 'Failed to fetch returned stock details',
         error: error.message
+      });
+    }
+  },
+
+  // Get shop credit balance summary by shop ID
+  getShopCreditBalance: async (req, res) => {
+    try {
+      const shopId = req.body?.shopId || req.query?.shopId || req.params?.shopId;
+
+      if (!shopId) {
+        return res.status(400).json({
+          success: false,
+          message: 'shopId is required',
+        });
+      }
+
+      const summary = await stockTransactionRepository.getShopCreditSummary(shopId);
+
+      return res.status(200).json({
+        success: true,
+        message: 'Shop credit balance fetched successfully',
+        data: {
+          shop_id: shopId,
+          credit_amount_to_get: Number(summary.credit_amount_to_get) || 0,
+          has_credit_balance: Boolean(summary.has_credit_balance),
+        },
+      });
+    } catch (error) {
+      console.error('Error fetching shop credit balance:', error);
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to fetch shop credit balance',
+        error: error.message,
       });
     }
   }
