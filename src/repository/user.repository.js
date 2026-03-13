@@ -22,6 +22,13 @@ class UserRepository {
     return result.rows[0];
   }
 
+  // Create new user
+  async createUser(username, hashedPassword) {
+    const query = `INSERT INTO users (username, password, created_at, updated_at) VALUES ($1, $2, NOW(), NOW()) RETURNING id, username`;
+    const result = await pool.query(query, [username, hashedPassword]);
+    return result.rows[0];
+  }
+
 }
 
 module.exports = new UserRepository();

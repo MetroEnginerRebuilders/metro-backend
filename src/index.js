@@ -31,8 +31,16 @@ const statementRoutes = require("./routes/statement.routes");
 
 const app = express();
 
+// Read CORS env vars (used later in startup logging)
+const rawOrigins = process.env.CORS_ORIGIN || "";
+const allowedOrigins = rawOrigins.split(",").map((s) => s.trim()).filter(Boolean);
+const allowAll = process.env.CORS_ALLOW_ALL === "true";
+const allowCredentials = process.env.CORS_ALLOW_CREDENTIALS === "true";
+
 // CORS middleware
-app.use(cors());
+app.use(cors(
+  origin=true
+));
 
 app.use(express.json());
 
@@ -70,6 +78,31 @@ app.get("/", async (req, res) => {
 });
 
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => {
-  console.log(`✅ Server running on port ${PORT}`);
+const DB_HOST = process.env.DB_HOST || "localhost";
+const DB_NAME = process.env.DB_NAME || "postgres";
+const DB_USER = process.env.DB_USER || "postgres";
+app.listen(PORT, async () => {
+  // On startup, try a lightweight query to ensure DB is reachable and log the database name.
+  try {
+    const result = await pool.query("SELECT current_database()");
+    const dbName = result.rows && result.rows[0] && result.rows[0].current_database;
+    console.log(`✅ Server running on port ${PORT}`);
+    console.log(`📦 Connected to database: ${dbName}`);
+    // Log active CORS policy for clarity
+    if (allowAll) {
+      console.log("🌐 CORS: allowing all origins (CORS_ALLOW_ALL=true)");
+    } else if (allowedOrigins.length > 0) {
+      console.log(`🌐 CORS: allowed origins = ${allowedOrigins.join(",")}`);
+    } else {
+      console.log("🌐 CORS: allowing all origins (no CORS_ORIGIN set)");
+    }
+  } catch (err) {
+      console.log(`✅ Server running on port ${PORT}`);
+      console.log("dbname ",DB_NAME)
+      console.log("DB_HOST ",DB_HOST)
+      console.log("DB_USER ",DB_USER)
+
+    console.error(`❌ Failed to verify database connection on startup:`, err.message || err);
+    console.log(`✅ Server running on port ${PORT}`);
+  }
 });

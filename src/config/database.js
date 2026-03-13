@@ -9,7 +9,7 @@ const pool = new Pool({
 });
 
 pool.on("connect", () => {
-  console.log("✅ PostgreSQL connected to metro_db");
+  console.log(`✅ PostgreSQL connected to ${process.env.DB_NAME || "<unknown>"}`);
 });
 
 pool.on("error", (err) => {
