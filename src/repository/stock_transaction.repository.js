@@ -754,31 +754,71 @@ const stockTransactionRepository = {
   // Get distinct models for a specific company from stock transactions
   getModelsByCompany: async (companyId) => {
     const query = `
-      SELECT DISTINCT
+      SELECT
         m.model_id,
-        m.model_name
+        m.model_name,
+        SUM(
+          CASE
+            WHEN stt.stock_type_code = 'PURCHASE' THEN sti.quantity
+            WHEN stt.stock_type_code = 'RETURN' THEN -sti.quantity
+            ELSE 0
+          END
+        ) AS current_quantity
       FROM stock_transaction_items sti
+      JOIN stock_transaction st ON sti.stock_transaction_id = st.stock_transaction_id
+      JOIN stock_types stt ON st.stock_type_id = stt.stock_type_id
       JOIN model m ON sti.model_id = m.model_id
       WHERE sti.company_id = $1
+      GROUP BY m.model_id, m.model_name
+      HAVING SUM(
+        CASE
+          WHEN stt.stock_type_code = 'PURCHASE' THEN sti.quantity
+          WHEN stt.stock_type_code = 'RETURN' THEN -sti.quantity
+          ELSE 0
+        END
+      ) > 0
       ORDER BY m.model_name
     `;
     const result = await pool.query(query, [companyId]);
-    return result.rows;
+    return result.rows.map((row) => ({
+      ...row,
+      current_quantity: Number(row.current_quantity) || 0,
+    }));
   },
 
   // Get distinct spares for a specific model from stock transactions
   getSparesByModel: async (modelId) => {
     const query = `
-      SELECT DISTINCT
+      SELECT
         s.spare_id,
-        s.spare_name
+        s.spare_name,
+        SUM(
+          CASE
+            WHEN stt.stock_type_code = 'PURCHASE' THEN sti.quantity
+            WHEN stt.stock_type_code = 'RETURN' THEN -sti.quantity
+            ELSE 0
+          END
+        ) AS current_quantity
       FROM stock_transaction_items sti
+      JOIN stock_transaction st ON sti.stock_transaction_id = st.stock_transaction_id
+      JOIN stock_types stt ON st.stock_type_id = stt.stock_type_id
       JOIN spare s ON sti.spare_id = s.spare_id
       WHERE sti.model_id = $1
+      GROUP BY s.spare_id, s.spare_name
+      HAVING SUM(
+        CASE
+          WHEN stt.stock_type_code = 'PURCHASE' THEN sti.quantity
+          WHEN stt.stock_type_code = 'RETURN' THEN -sti.quantity
+          ELSE 0
+        END
+      ) > 0
       ORDER BY s.spare_name
     `;
     const result = await pool.query(query, [modelId]);
-    return result.rows;
+    return result.rows.map((row) => ({
+      ...row,
+      current_quantity: Number(row.current_quantity) || 0,
+    }));
   },
 
   // Get distinct companies from stock transactions
