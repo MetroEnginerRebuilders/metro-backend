@@ -38,9 +38,10 @@ const allowAll = process.env.CORS_ALLOW_ALL === "true";
 const allowCredentials = process.env.CORS_ALLOW_CREDENTIALS === "true";
 
 // CORS middleware
-app.use(cors(
-  origin=true
-));
+app.use(cors({
+  origin: true,
+  credentials: true
+}));
 
 app.use(express.json());
 
