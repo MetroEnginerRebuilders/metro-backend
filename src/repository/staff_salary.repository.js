@@ -78,10 +78,6 @@ class StaffSalaryRepository {
         throw new Error("Bank account not found");
       }
 
-      if (parseFloat(bankAccount.current_balance) < parseFloat(staffSalaryData.amount)) {
-        throw new Error("Insufficient balance in bank account");
-      }
-
       // Insert staff salary
       const insertQuery = `
         INSERT INTO staff_salary (
@@ -245,10 +241,6 @@ class StaffSalaryRepository {
           throw new Error("New bank account not found");
         }
 
-        if (parseFloat(newBankAccount.current_balance) < newAmount) {
-          throw new Error("Insufficient balance in new bank account");
-        }
-
         // Subtract new amount from new bank account
         const updateNewBankQuery = `
           UPDATE bank_account 
@@ -261,21 +253,6 @@ class StaffSalaryRepository {
       } else {
         // Same bank account - adjust by difference
         if (amountDifference !== 0) {
-          // Check bank account has sufficient balance if amount increased
-          if (amountDifference > 0) {
-            const bankQuery = "SELECT * FROM bank_account WHERE bank_account_id = $1 FOR UPDATE";
-            const bankResult = await client.query(bankQuery, [staffSalaryData.bankAccountId]);
-            const bankAccount = bankResult.rows[0];
-
-            if (!bankAccount) {
-              throw new Error("Bank account not found");
-            }
-
-            if (parseFloat(bankAccount.current_balance) < amountDifference) {
-              throw new Error("Insufficient balance in bank account for the additional amount");
-            }
-          }
-
           // If amount increased, subtract difference; if decreased, add difference back
           const updateBankQuery = `
             UPDATE bank_account 
