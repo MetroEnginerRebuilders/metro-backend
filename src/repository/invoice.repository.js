@@ -5,7 +5,8 @@ class InvoiceRepository {
     const query = `
       SELECT c.*
       FROM invoice i
-      INNER JOIN customer c ON i.customer_id = c.customer_id
+      LEFT JOIN job j ON i.job_id = j.job_id
+      INNER JOIN customer c ON c.customer_id = COALESCE(j.customer_id, i.customer_id)
       WHERE i.invoice_id = $1
     `;
     const result = await pool.query(query, [invoiceId]);
@@ -27,12 +28,13 @@ class InvoiceRepository {
     const query = `
       SELECT 
         i.*, 
+        COALESCE(j.customer_id, i.customer_id) AS customer_id,
         c.customer_name,
         c.customer_number,
         j.job_number
       FROM invoice i
-      LEFT JOIN customer c ON i.customer_id = c.customer_id
       LEFT JOIN job j ON i.job_id = j.job_id
+      LEFT JOIN customer c ON c.customer_id = COALESCE(j.customer_id, i.customer_id)
       WHERE i.invoice_id = $1
     `;
     const result = await pool.query(query, [invoiceId]);
@@ -45,7 +47,7 @@ class InvoiceRepository {
         i.invoice_id AS invoice_id,
         i.invoice_number AS invoice_number,
         i.job_id AS invoice_job_id,
-        i.customer_id AS invoice_customer_id,
+        COALESCE(j.customer_id, i.customer_id) AS invoice_customer_id,
         i.invoice_date AS invoice_date,
         i.total_amount AS invoice_total_amount,
         i.invoice_status AS invoice_status,
@@ -80,7 +82,7 @@ class InvoiceRepository {
         c.updated_at AS customer_updated_at
       FROM invoice i
       INNER JOIN job j ON i.job_id = j.job_id
-      INNER JOIN customer c ON i.customer_id = c.customer_id
+      INNER JOIN customer c ON c.customer_id = COALESCE(j.customer_id, i.customer_id)
       LEFT JOIN (
         SELECT invoice_id, SUM(amount_paid) AS total_paid
         FROM invoice_payment
@@ -133,12 +135,13 @@ class InvoiceRepository {
     let query = `
       SELECT 
         i.*, 
+        COALESCE(j.customer_id, i.customer_id) AS customer_id,
         c.customer_name,
         c.customer_number,
         j.job_number
       FROM invoice i
-      LEFT JOIN customer c ON i.customer_id = c.customer_id
       LEFT JOIN job j ON i.job_id = j.job_id
+      LEFT JOIN customer c ON c.customer_id = COALESCE(j.customer_id, i.customer_id)
     `;
     let countQuery = "SELECT COUNT(*) FROM invoice i";
     let params = [];

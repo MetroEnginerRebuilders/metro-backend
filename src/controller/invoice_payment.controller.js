@@ -98,6 +98,31 @@ class InvoicePaymentController {
       res.status(500).json({ error: "Internal server error" });
     }
   }
+
+  async deletePayment(req, res) {
+    try {
+      const { invoicePaymentId } = req.params;
+
+      if (!invoicePaymentId) {
+        return res.status(400).json({ error: "invoicePaymentId is required" });
+      }
+
+      const result = await invoicePaymentRepository.deletePaymentById(invoicePaymentId);
+
+      if (!result) {
+        return res.status(404).json({ error: "Invoice payment not found" });
+      }
+
+      return res.json({
+        success: true,
+        message: "Invoice payment deleted successfully",
+        data: result,
+      });
+    } catch (error) {
+      console.error("Error deleting invoice payment:", error);
+      return res.status(500).json({ error: "Internal server error" });
+    }
+  }
 }
 
 module.exports = new InvoicePaymentController();

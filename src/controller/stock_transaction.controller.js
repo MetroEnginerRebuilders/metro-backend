@@ -150,22 +150,7 @@ const stockTransactionController = {
 
       const paymentMeta = await stockTransactionRepository.calculateAndUpdatePaymentStatus(stockTransaction.stock_transaction_id);
 
-      if (initialPaymentResult?.payment?.stock_payment_id && paidNow > 0) {
-        const financeTypeCode = stockType.stock_type_code === 'PURCHASE' ? 'EXPENSE' : 'INCOME';
-        const financeTypeId = await dailyTransactionRepository.getFinanceTypeIdByCode(financeTypeCode);
-
-        await dailyTransactionRepository.create({
-          shop_id: stockTransaction.shop_id,
-          finance_types_id: financeTypeId,
-          finance_categories_id: null,
-          reference_type: 'stock_payment',
-          reference_id: initialPaymentResult.payment.stock_payment_id,
-          bank_account_id: stockTransaction.bank_account_id,
-          amount: paidNow,
-          transaction_date: stockTransaction.order_date,
-          description: stockTransaction.description || `Initial ${String(stockType.stock_type_code || '').toLowerCase()} settlement`,
-        });
-      }
+      // Stock payment daily transaction is created inside repository.addPayment
 
       const latestData = await stockTransactionRepository.findById(stockTransaction.stock_transaction_id);
 
@@ -366,22 +351,7 @@ const stockTransactionController = {
 
       await dailyTransactionRepository.deleteByReference('stock', stockTransactionId);
 
-      if (additionalPaymentResult?.payment?.stock_payment_id && paidNow > 0) {
-        const financeTypeCode = stockType.stock_type_code === 'PURCHASE' ? 'EXPENSE' : 'INCOME';
-        const financeTypeId = await dailyTransactionRepository.getFinanceTypeIdByCode(financeTypeCode);
-
-        await dailyTransactionRepository.create({
-          shop_id: updatedTransaction.shop_id,
-          finance_types_id: financeTypeId,
-          finance_categories_id: null,
-          reference_type: 'stock_payment',
-          reference_id: additionalPaymentResult.payment.stock_payment_id,
-          bank_account_id: updatedTransaction.bank_account_id,
-          amount: paidNow,
-          transaction_date: updatedTransaction.order_date,
-          description: updatedTransaction.description || `Additional ${String(stockType.stock_type_code || '').toLowerCase()} settlement`,
-        });
-      }
+      // Stock payment daily transaction is created inside repository.addPayment
 
       const latestData = await stockTransactionRepository.findById(stockTransactionId);
 
@@ -485,19 +455,7 @@ const stockTransactionController = {
         }
       }
 
-      const financeTypeCode = result.stock_type_code === 'RETURN' ? 'INCOME' : 'EXPENSE';
-      const financeTypeId = await dailyTransactionRepository.getFinanceTypeIdByCode(financeTypeCode);
-      await dailyTransactionRepository.create({
-        shop_id: stockTransaction?.shop_id || null,
-        finance_types_id: financeTypeId,
-        finance_categories_id: null,
-        reference_type: 'stock_payment',
-        reference_id: result.payment.stock_payment_id,
-        bank_account_id: bankAccountId,
-        amount: paidAmount,
-        transaction_date: paymentDate,
-        description: remarks || `Stock ${String(result.stock_type_code || '').toLowerCase()} payment for transaction ${stockTransactionId}`,
-      });
+      // Stock payment daily transaction is created inside repository.addPayment
 
       return res.status(201).json({
         success: true,
@@ -530,6 +488,42 @@ const stockTransactionController = {
       return res.status(500).json({
         success: false,
         message: 'Failed to add stock payment',
+        error: error.message,
+      });
+    }
+  },
+
+  // Delete stock payment by payment ID
+  deleteStockPayment: async (req, res) => {
+    try {
+      const { stockPaymentId } = req.params;
+
+      if (!stockPaymentId) {
+        return res.status(400).json({
+          success: false,
+          message: 'stockPaymentId is required',
+        });
+      }
+
+      const result = await stockTransactionRepository.deletePaymentById(stockPaymentId);
+
+      if (!result) {
+        return res.status(404).json({
+          success: false,
+          message: 'Stock payment not found',
+        });
+      }
+
+      return res.status(200).json({
+        success: true,
+        message: 'Stock payment deleted successfully',
+        data: result,
+      });
+    } catch (error) {
+      console.error('Error deleting stock payment:', error);
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to delete stock payment',
         error: error.message,
       });
     }

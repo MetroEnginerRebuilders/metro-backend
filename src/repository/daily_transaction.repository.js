@@ -6,10 +6,10 @@ class DailyTransactionRepository {
     const query = `
       SELECT finance_type_id
       FROM finance_types
-      WHERE finance_type_code = $1
+      WHERE UPPER(finance_type_code) = UPPER($1)
       LIMIT 1
     `;
-    const result = await executor.query(query, [financeTypeCode]);
+    const result = await executor.query(query, [String(financeTypeCode || '').trim()]);
     return result.rows[0]?.finance_type_id || null;
   }
 
@@ -168,6 +168,7 @@ class DailyTransactionRepository {
         dt.created_at,
         ft.finance_type_code,
         ft.finance_type_name,
+        ft.finance_type_name AS "financeTypeName",
         fc.finance_category_name,
         ba.account_name,
         CASE
@@ -287,6 +288,7 @@ class DailyTransactionRepository {
       return {
         ...row,
         amount: Number(row.amount) || 0,
+        financeTypeName: row.finance_type_name || null,
         reference_name: isFinanceCategoryReference ? null : row.reference_name || null,
       };
     });
@@ -326,6 +328,8 @@ class DailyTransactionRepository {
         CASE
           WHEN LOWER(COALESCE(dt.reference_type, '')) = 'stock' THEN
             'stock-' || COALESCE(sh_dt.shop_name, sh_stock.shop_name, 'unknown')
+          WHEN LOWER(COALESCE(dt.reference_type, '')) = 'stock_payment' THEN
+            'stock-payment-' || COALESCE(sh_dt.shop_name, sh_stock_payment.shop_name, 'unknown')
           WHEN LOWER(COALESCE(dt.reference_type, '')) = 'salary' THEN
             'salary-' || COALESCE(s.staff_name, 'unknown')
           WHEN LOWER(COALESCE(dt.reference_type, '')) = 'job' THEN
@@ -365,6 +369,13 @@ class DailyTransactionRepository {
        AND dt.reference_id = stx.stock_transaction_id
       LEFT JOIN shop sh_stock
         ON stx.shop_id = sh_stock.shop_id
+      LEFT JOIN stock_payment spay
+        ON LOWER(COALESCE(dt.reference_type, '')) = 'stock_payment'
+       AND dt.reference_id = spay.stock_payment_id
+      LEFT JOIN stock_transaction stx_pay
+        ON spay.stock_transaction_id = stx_pay.stock_transaction_id
+      LEFT JOIN shop sh_stock_payment
+        ON stx_pay.shop_id = sh_stock_payment.shop_id
       LEFT JOIN staff_salary ss
         ON LOWER(COALESCE(dt.reference_type, '')) = 'salary'
        AND dt.reference_id = ss.staff_salary_id
@@ -390,6 +401,8 @@ class DailyTransactionRepository {
     return result.rows.map((row) => ({
       transaction_id: row.transaction_id,
       reference_id: row.reference_id,
+      finance_types_id: row.finance_types_id,
+      financeTypeName: row.financeTypeName || row.finance_type_name || null,
       transaction_date: row.transaction_date,
       amount: Number(row.amount) || 0,
       description: row.common_key,

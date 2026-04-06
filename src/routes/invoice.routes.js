@@ -14,5 +14,6 @@ router.get("/invoice/:invoiceId/payments", invoicePaymentController.listByInvoic
 router.post("/invoice/:invoiceId/items", invoiceController.addItems);
 router.delete("/invoice/:invoiceId/items/:invoiceItemId", invoiceController.deleteItem);
 router.post("/invoice/payment", invoicePaymentController.addPayment);
+router.delete("/invoice/payment/:invoicePaymentId", invoicePaymentController.deletePayment);
 
 module.exports = router;

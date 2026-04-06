@@ -208,7 +208,7 @@ class InvoicePaymentRepository {
           payment.amount_paid,
           payment.payment_date,
           `Payment of Invoice ${invoice.invoice_number}`,
-          `INVOICE_PAYMENT:${invoice.invoice_number}`,
+          `INVOICE_PAYMENT:${payment.invoice_payment_id}`,
         ]
       );
 
@@ -293,6 +293,165 @@ class InvoicePaymentRepository {
       return {
         payment,
         invoice: updatedInvoice,
+      };
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async deletePaymentById(invoicePaymentId) {
+    const client = await pool.connect();
+
+    try {
+      await client.query("BEGIN");
+
+      const paymentQuery = `
+        SELECT
+          ip.invoice_payment_id,
+          ip.invoice_id,
+          ip.bank_account_id,
+          ip.amount_paid,
+          ip.payment_date,
+          ip.remarks,
+          i.invoice_number,
+          i.total_amount,
+          i.job_id,
+          COALESCE(j.advance_amount, 0) AS advance_amount
+        FROM invoice_payment ip
+        INNER JOIN invoice i ON ip.invoice_id = i.invoice_id
+        LEFT JOIN job j ON i.job_id = j.job_id
+        WHERE ip.invoice_payment_id = $1
+        FOR UPDATE OF ip, i
+      `;
+
+      const paymentResult = await client.query(paymentQuery, [invoicePaymentId]);
+      const payment = paymentResult.rows[0];
+
+      if (!payment) {
+        await client.query("ROLLBACK");
+        return null;
+      }
+
+      const amountPaid = Number(payment.amount_paid) || 0;
+
+      if (payment.bank_account_id && amountPaid > 0) {
+        await client.query(
+          `
+          UPDATE bank_account
+          SET
+            current_balance = current_balance - $1,
+            last_transaction = $2,
+            updated_at = NOW()
+          WHERE bank_account_id = $3
+          `,
+          [amountPaid, payment.payment_date, payment.bank_account_id]
+        );
+      }
+
+      const newRemarkRef = `INVOICE_PAYMENT:${payment.invoice_payment_id}`;
+      const oldRemarkRef = `INVOICE_PAYMENT:${payment.invoice_number}`;
+
+      const linkedFinanceResult = await client.query(
+        `
+        SELECT finance_id
+        FROM finance
+        WHERE remarks = $1
+        `,
+        [newRemarkRef]
+      );
+
+      let financeRows = linkedFinanceResult.rows;
+
+      if (financeRows.length === 0) {
+        const legacyFinanceResult = await client.query(
+          `
+          SELECT finance_id
+          FROM finance
+          WHERE remarks = $1
+            AND bank_account_id = $2
+            AND amount = $3
+            AND transaction_date = $4
+          ORDER BY created_at ASC
+          LIMIT 1
+          `,
+          [oldRemarkRef, payment.bank_account_id, amountPaid, payment.payment_date]
+        );
+        financeRows = legacyFinanceResult.rows;
+      }
+
+      for (const financeRow of financeRows) {
+        await dailyTransactionRepository.deleteByReference("finance", financeRow.finance_id, client);
+        await client.query("DELETE FROM finance WHERE finance_id = $1", [financeRow.finance_id]);
+      }
+
+      await client.query(
+        `
+        DELETE FROM invoice_payment
+        WHERE invoice_payment_id = $1
+        `,
+        [invoicePaymentId]
+      );
+
+      const settlementResult = await client.query(
+        `
+        SELECT COALESCE(SUM(amount_paid), 0) AS total_paid
+        FROM invoice_payment
+        WHERE invoice_id = $1
+        `,
+        [payment.invoice_id]
+      );
+
+      const totalPaidWithoutAdvance = Number(settlementResult.rows[0]?.total_paid) || 0;
+      const advanceAmount = Number(payment.advance_amount) || 0;
+      const totalSettled = totalPaidWithoutAdvance + advanceAmount;
+      const totalAmount = Number(payment.total_amount) || 0;
+
+      let invoicePaymentStatus = "unpaid";
+      let invoiceStatus = "open";
+
+      if (totalSettled >= totalAmount && totalAmount > 0) {
+        invoicePaymentStatus = "paid";
+        invoiceStatus = "closed";
+      } else if (totalSettled > 0) {
+        invoicePaymentStatus = "partial";
+        invoiceStatus = "open";
+      }
+
+      const invoiceUpdateResult = await client.query(
+        `
+        UPDATE invoice
+        SET
+          payment_status = $1,
+          invoice_status = $2,
+          updated_at = NOW()
+        WHERE invoice_id = $3
+        RETURNING *
+        `,
+        [invoicePaymentStatus, invoiceStatus, payment.invoice_id]
+      );
+
+      if (payment.job_id) {
+        const jobStatus = invoicePaymentStatus === "paid" ? "completed" : "pending";
+        await client.query(
+          `
+          UPDATE job
+          SET
+            status = $1,
+            updated_at = NOW()
+          WHERE job_id = $2
+          `,
+          [jobStatus, payment.job_id]
+        );
+      }
+
+      await client.query("COMMIT");
+
+      return {
+        deleted_payment: payment,
+        invoice: invoiceUpdateResult.rows[0],
       };
     } catch (error) {
       await client.query("ROLLBACK");

@@ -1,4 +1,5 @@
 const pool = require('../config/database');
+const dailyTransactionRepository = require('./daily_transaction.repository');
 
 const stockTransactionRepository = {
   // Get stock type by ID
@@ -266,6 +267,29 @@ const stockTransactionRepository = {
         insertedPaymentResult.rows[0].stock_payment_id,
       ]);
 
+      const stockTypeCode = String(stockTransaction.stock_type_code || '').toUpperCase();
+      const financeTypeCode = stockTypeCode === 'RETURN' ? 'INCOME' : 'EXPENSE';
+      const financeTypeId = await dailyTransactionRepository.getFinanceTypeIdByCode(financeTypeCode, client);
+
+      if (financeTypeId) {
+        await dailyTransactionRepository.create(
+          {
+            shop_id: stockTransaction.shop_id || null,
+            finance_types_id: financeTypeId,
+            finance_categories_id: null,
+            reference_type: 'stock_payment',
+            reference_id: insertedPaymentResult.rows[0].stock_payment_id,
+            bank_account_id: bankAccountId,
+            amount: Number(amountPaid) || 0,
+            transaction_date: paymentOn,
+            description:
+              remarks ||
+              `Stock ${String(stockTypeCode || '').toLowerCase()} payment for transaction ${stockTransactionId}`,
+          },
+          client
+        );
+      }
+
       await client.query('COMMIT');
 
       return {
@@ -275,6 +299,95 @@ const stockTransactionRepository = {
         payment_status: computedPaymentStatus,
         stock_type_code: stockTransaction.stock_type_code,
         shop_id: stockTransaction.shop_id,
+      };
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+  },
+
+  // Delete stock payment by ID, reverse bank balance and update payment status
+  deletePaymentById: async (stockPaymentId) => {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      const paymentQuery = `
+        SELECT
+          sp.stock_payment_id,
+          sp.stock_transaction_id,
+          sp.bank_account_id,
+          sp.amount_paid,
+          sp.payment_on,
+          sp.remarks,
+          st.shop_id,
+          stt.stock_type_code
+        FROM stock_payment sp
+        INNER JOIN stock_transaction st ON sp.stock_transaction_id = st.stock_transaction_id
+        LEFT JOIN stock_types stt ON st.stock_type_id = stt.stock_type_id
+        WHERE sp.stock_payment_id = $1
+        FOR UPDATE OF sp, st
+      `;
+
+      const paymentResult = await client.query(paymentQuery, [stockPaymentId]);
+      const payment = paymentResult.rows[0];
+
+      if (!payment) {
+        await client.query('ROLLBACK');
+        return null;
+      }
+
+      const amount = Number(payment.amount_paid) || 0;
+      const stockTypeCode = String(payment.stock_type_code || '').toUpperCase();
+
+      if (payment.bank_account_id && amount > 0) {
+        if (stockTypeCode === 'RETURN') {
+          await client.query(
+            `
+            UPDATE bank_account
+            SET current_balance = current_balance - $1,
+                last_transaction = $2,
+                updated_at = NOW()
+            WHERE bank_account_id = $3
+            `,
+            [amount, payment.payment_on, payment.bank_account_id]
+          );
+        } else {
+          await client.query(
+            `
+            UPDATE bank_account
+            SET current_balance = current_balance + $1,
+                last_transaction = $2,
+                updated_at = NOW()
+            WHERE bank_account_id = $3
+            `,
+            [amount, payment.payment_on, payment.bank_account_id]
+          );
+        }
+      }
+
+      await dailyTransactionRepository.deleteByReference('stock_payment', stockPaymentId, client);
+
+      await client.query(
+        `
+        DELETE FROM stock_payment
+        WHERE stock_payment_id = $1
+        `,
+        [stockPaymentId]
+      );
+
+      const paymentMeta = await stockTransactionRepository.calculateAndUpdatePaymentStatus(
+        payment.stock_transaction_id,
+        client
+      );
+
+      await client.query('COMMIT');
+
+      return {
+        deleted_payment: payment,
+        payment_summary: paymentMeta,
       };
     } catch (error) {
       await client.query('ROLLBACK');

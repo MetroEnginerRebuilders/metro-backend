@@ -200,6 +200,17 @@ class JobRepository {
       ]);
 
       const updatedJob = updateResult.rows[0];
+
+      await client.query(
+        `
+        UPDATE invoice
+        SET customer_id = $1,
+            updated_at = NOW()
+        WHERE job_id = $2
+        `,
+        [updatedJob.customer_id, jobId]
+      );
+
       const advanceRemarkRef = `JOB_ADVANCE:${updatedJob.job_number}`;
       const legacyAdvanceRemarkRef = `JOB_ADVANCE:${jobId}`;
 
