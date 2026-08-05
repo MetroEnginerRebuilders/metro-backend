@@ -80,6 +80,21 @@ class StaffRepository {
     };
   }
 
+  // Get all active staff without pagination
+  async findAllActive(searchTerm = "") {
+    let query = "SELECT * FROM staff WHERE inactive_date IS NULL";
+    const params = [];
+
+    if (searchTerm && searchTerm.trim() !== "") {
+      query += " AND staff_name ILIKE $1";
+      params.push(`%${searchTerm.trim()}%`);
+    }
+
+    query += " ORDER BY created_at DESC";
+    const result = await pool.query(query, params);
+    return result.rows;
+  }
+
   // Get staff by ID
   async findById(staffId) {
     const query = "SELECT * FROM staff WHERE staff_id = $1";

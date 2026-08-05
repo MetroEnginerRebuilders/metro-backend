@@ -125,6 +125,25 @@ class StaffController {
     }
   }
 
+  // Get all active staff without pagination
+  async listAllActive(req, res) {
+    try {
+      const { search } = req.query;
+      const staff = await staffRepository.findAllActive(search);
+
+      res.json({
+        success: true,
+        data: staff,
+      });
+    } catch (error) {
+      console.error("List all active staff error:", error);
+      res.status(500).json({
+        success: false,
+        message: "Internal server error",
+      });
+    }
+  }
+
   // Update staff
   async update(req, res) {
     try {
