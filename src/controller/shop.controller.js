@@ -73,6 +73,24 @@ class ShopController {
     }
   }
 
+  // Get all shops without pagination
+  async listAll(req, res) {
+    try {
+      const shops = await shopRepository.findAllWithoutPagination();
+
+      res.json({
+        success: true,
+        data: shops,
+      });
+    } catch (error) {
+      console.error("List all shops error:", error);
+      res.status(500).json({
+        success: false,
+        message: "Internal server error",
+      });
+    }
+  }
+
   // Update shop
   async update(req, res) {
     try {

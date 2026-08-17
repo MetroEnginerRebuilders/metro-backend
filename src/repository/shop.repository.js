@@ -48,6 +48,13 @@ class ShopRepository {
     };
   }
 
+  // Get all shops without pagination
+  async findAllWithoutPagination() {
+    const query = "SELECT * FROM shop ORDER BY shop_name ASC";
+    const result = await pool.query(query);
+    return result.rows;
+  }
+
   // Get shop by ID
   async findById(shopId) {
     const query = "SELECT * FROM shop WHERE shop_id = $1";
