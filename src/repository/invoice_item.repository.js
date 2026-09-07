@@ -174,10 +174,6 @@ class InvoiceItemRepository {
           bankAccountId = bankResult.rows[0]?.bank_account_id || null;
         }
 
-        if (!bankAccountId) {
-          throw new Error("bankAccountId is required for spare items");
-        }
-
         const stockTypeResult = await client.query(
           "SELECT stock_type_id FROM stock_types WHERE stock_type_code = 'RETURN'"
         );
